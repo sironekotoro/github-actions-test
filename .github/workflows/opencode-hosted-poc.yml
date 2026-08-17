@@ -2,8 +2,8 @@ name: OpenCode Hosted PoC
 
 on:
   issues:
-    types:
-      - labeled
+    types: [labeled]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,16 +11,13 @@ permissions:
 
 jobs:
   opencode:
-    if: >-
-      github.event.label.name == 'opencode-run' &&
-      github.event.issue.user.login == 'sironekotoro'
-
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.label.name == 'opencode-run' && github.event.issue.user.login == 'sironekotoro') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install OpenCode
         run: |
@@ -34,26 +31,29 @@ jobs:
           node <<'NODE'
           const fs = require('fs');
           const event = JSON.parse(fs.readFileSync(process.env.EVENT_PATH, 'utf8'));
-          const prompt = `You are working only in this checked-out GitHub repository.
-
-GitHub Issue #${event.issue.number}
-
-Title:
-${event.issue.title}
-
-Body:
-${event.issue.body || ''}
-
-Perform only the requested task.
-
-Rules:
-- Work only inside this repository.
-- Do not access other repositories.
-- Do not commit.
-- Do not push.
-- Do not create a pull request.
-- Do not modify unrelated files.
-- Verify your work before finishing.`;
+          const issue = event.issue || { number: 0, title: 'Manual OpenCode PoC', body: 'Reply with exactly: OPENCODE_HOSTED_POC_OK' };
+          const prompt = [
+            'You are working only in this checked-out GitHub repository.',
+            '',
+            `GitHub Issue #${issue.number}`,
+            '',
+            'Title:',
+            issue.title,
+            '',
+            'Body:',
+            issue.body || '',
+            '',
+            'Perform only the requested task.',
+            '',
+            'Rules:',
+            '- Work only inside this repository.',
+            '- Do not access other repositories.',
+            '- Do not commit.',
+            '- Do not push.',
+            '- Do not create a pull request.',
+            '- Do not modify unrelated files.',
+            '- Verify your work before finishing.'
+          ].join('\n');
           fs.writeFileSync(process.env.RUNNER_TEMP + '/opencode-prompt.txt', prompt);
           NODE
 
@@ -61,10 +61,9 @@ Rules:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
-          PROMPT="$(cat "$RUNNER_TEMP/opencode-prompt.txt")"
           opencode run \
             --model openrouter/deepseek/deepseek-v4-flash \
-            "$PROMPT"
+            "$(cat "$RUNNER_TEMP/opencode-prompt.txt")"
 
       - name: Show changes
         if: always()
