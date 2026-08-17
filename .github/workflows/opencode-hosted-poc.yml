@@ -6,18 +6,29 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   issues: read
+  pull-requests: write
 
 jobs:
   opencode:
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.label.name == 'opencode-run' && github.event.issue.user.login == 'sironekotoro') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare AI branch
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number || 'manual' }}
+        run: |
+          BRANCH="ai/issue-${ISSUE_NUMBER}"
+          echo "AI_BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          git checkout -b "$BRANCH"
 
       - name: Install OpenCode
         run: |
@@ -50,7 +61,7 @@ jobs:
             '- Do not access other repositories.',
             '- Do not commit.',
             '- Do not push.',
-            '- Do not create a pull request.',
+            '- Do not create a pull request yourself.',
             '- Do not modify unrelated files.',
             '- Verify your work before finishing.'
           ].join('\n');
@@ -66,9 +77,47 @@ jobs:
             "$(cat "$RUNNER_TEMP/opencode-prompt.txt")"
 
       - name: Show changes
-        if: always()
         run: |
           echo '===== git status ====='
           git status --short
           echo '===== git diff ====='
           git diff
+
+      - name: Run repository tests
+        run: |
+          if [ -f package.json ]; then
+            npm test
+          else
+            echo 'No package.json; skipping npm test.'
+          fi
+
+      - name: Commit, push, and create Draft PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || '0' }}
+          ISSUE_TITLE: ${{ github.event.issue.title || 'Manual OpenCode PoC' }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add -A
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+
+          git commit -m "AI: issue #${ISSUE_NUMBER}"
+          git push --set-upstream origin "$AI_BRANCH"
+
+          if gh pr list --head "$AI_BRANCH" --state open --json number --jq 'length' | grep -q '^0$'; then
+            gh pr create \
+              --draft \
+              --base master \
+              --head "$AI_BRANCH" \
+              --title "AI: ${ISSUE_TITLE}" \
+              --body "Automated OpenCode/OpenRouter implementation for #${ISSUE_NUMBER}.\n\n- Trigger: \`opencode-run\`\n- Runner: GitHub-hosted Ubuntu\n- Repository test: PASS\n- \`git diff --check\`: PASS\n\nCloses #${ISSUE_NUMBER}"
+          else
+            echo "An open PR already exists for $AI_BRANCH."
+          fi
