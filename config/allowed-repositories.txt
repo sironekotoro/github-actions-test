@@ -1,0 +1,8 @@
+# Repositories allowed for agent dispatch.
+# Canonical owner/name form only. One repository per line.
+sironekotoro/github-actions-test
+sironekotoro/zengin-pl
+sironekotoro/loveblood-record
+sironekotoro/chart2playlist
+sironekotoro/rapidgator-open-folders-file
+sironekotoro/sironekotoro-blog
