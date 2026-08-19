@@ -12,8 +12,10 @@ FAILURE_FILE="${RUNNER_TEMP:-/tmp}/failure_category"
 SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-/tmp/agent_step_summary.md}"
 
 mkdir -p "$(dirname "$FAILURE_FILE")"
-: > "$FAILURE_FILE"
-: > "$SUMMARY_FILE"
+# preserve the failure category across workflow steps; do not truncate on source
+[ -f "$FAILURE_FILE" ] || : > "$FAILURE_FILE"
+mkdir -p "$(dirname "$SUMMARY_FILE")"
+[ -f "$SUMMARY_FILE" ] || : > "$SUMMARY_FILE"
 
 # --- failure categories (machine readable) ---
 CAT_INVALID_PAYLOAD="INVALID_PAYLOAD"
