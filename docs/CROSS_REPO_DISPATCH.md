@@ -6,6 +6,8 @@ Cross-repository dispatch is implemented behind `CROSS_REPO_ENABLED` and uses a 
 
 Live cross-repo execution is intentionally fail-closed until the App is configured.
 
+> **Privacy boundary:** `sironekotoro/github-actions-test` is a public dispatcher. Workflow inputs, run metadata, step summaries, branch names, and PR links can be publicly visible. Therefore this repository's committed allowlist contains **public targets only**. Do not dispatch tasks to private repositories from this public control plane. If private targets are needed, move/duplicate the dispatcher into a private repository first.
+
 ## Architecture
 
 ```text
@@ -71,10 +73,10 @@ The workflow requests only `contents: write` and `pull-requests: write` on the g
 1. GitHub -> Settings -> Developer settings -> GitHub Apps -> **New GitHub App**.
 2. Give the App a private name such as `sironekotoro-agent-dispatch`.
 3. Set repository permissions: **Contents: Read and write**, **Pull requests: Read and write**; leave unrelated permissions disabled.
-4. Install the App on **Only select repositories**, selecting only approved agent targets.
+4. Install the App on **Only select repositories**, selecting only approved **public** agent targets for this dispatcher.
 5. Generate one private key for the App.
 6. In `sironekotoro/github-actions-test` -> Settings -> Secrets and variables -> Actions:
-   - repository secret `GH_APP_ID` = App ID (or client id if the workflow is later migrated to that input)
+   - repository secret `GH_APP_ID` = App ID
    - repository secret `GH_APP_PRIVATE_KEY` = private key contents
    - keep existing `OPENROUTER_API_KEY`
 7. Under Actions variables, set `CROSS_REPO_ENABLED=true`.
@@ -85,18 +87,19 @@ Never paste App credentials into an Issue or task prompt.
 
 ## Allowlist
 
-`config/allowed-repositories.txt` is authoritative. Entries are canonical `owner/name` values. A task targeting anything else fails with `TARGET_REPOSITORY_NOT_ALLOWED` before a target credential is used.
+`config/allowed-repositories.txt` is authoritative for this public dispatcher. Entries are canonical `owner/name` values. A task targeting anything else fails with `TARGET_REPOSITORY_NOT_ALLOWED` before a target credential is used.
 
-Current candidates:
+Current committed targets are deliberately public:
 
 - `sironekotoro/github-actions-test`
 - `sironekotoro/zengin-pl`
-- `sironekotoro/loveblood-record`
-- `sironekotoro/chart2playlist`
-- `sironekotoro/rapidgator-open-folders-file`
 - `sironekotoro/sironekotoro-blog`
 
-Remove any repository that should no longer accept central agent tasks. Installing the App is a second independent gate.
+Installing the App is a second independent gate.
+
+### Private targets
+
+Private repository names and task metadata should not be sent through a public dispatcher because Actions run metadata and logs can reveal them. To support private repositories safely, first create a private central dispatcher (or make this dispatcher private), then maintain a private allowlist there and install the same narrowly scoped App only on the required private targets.
 
 ## Dry run
 
@@ -137,7 +140,7 @@ Cross-repo specific categories:
 2. **Wrong checkout:** unit/negative test must produce `REPOSITORY_IDENTITY_MISMATCH` -> agent must not start.
 3. **Dry run:** approved target -> auth, checkout, identity, default branch, prompt build only.
 4. **Positive public target:** `sironekotoro/zengin-pl`, docs-only file, generated PR left unmerged.
-5. **Second default-branch shape:** if desired, run a docs-only task against an approved `main` repo and leave its PR unmerged.
+5. **Second default-branch shape:** `sironekotoro/sironekotoro-blog` (`main`), docs-only file, generated PR left unmerged if needed.
 
 ## Rollback
 
