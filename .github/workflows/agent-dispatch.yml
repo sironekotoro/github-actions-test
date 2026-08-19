@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       target_repository:
-        description: 'Target repository as owner/name, e.g. sironekotoro/github-actions-test'
+        description: 'Target repository as owner/name'
         required: true
       task_id:
         description: 'Unique task id (branch will be agent/<task_id>)'
@@ -18,9 +18,14 @@ on:
         description: 'Task instructions for the coding agent'
         required: true
       model:
-        description: 'OpenRouter model override (e.g. openrouter/deepseek/deepseek-v4-flash)'
+        description: 'OpenRouter model override'
         required: false
         default: ''
+      dry_run:
+        description: 'Validate auth/checkout/identity/default branch/prompt without running the agent or mutating the target'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -28,20 +33,20 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: agent-dispatch-${{ github.event.issue.number || inputs.task_id }}
+  group: agent-dispatch-${{ inputs.target_repository || github.repository }}-${{ github.event.issue.number || inputs.task_id }}
   cancel-in-progress: false
 
 jobs:
   agent:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Only run for dispatch, or for issues labeled with an explicit agent label.
     if: ${{ github.event_name == 'workflow_dispatch' || contains(fromJSON('["opencode-run","agent:ready"]'), github.event.label.name) }}
     env:
       ACTOR_ALLOWLIST: 'sironekotoro'
+      CROSS_REPO_ENABLED: ${{ vars.CROSS_REPO_ENABLED || 'false' }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout dispatcher repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -63,24 +68,123 @@ jobs:
           DISPATCH_INPUTS: ${{ github.event_name == 'workflow_dispatch' && toJson(inputs) || '' }}
         run: node scripts/parse-task.mjs
 
-      - name: Repository identity guard
-        id: guard
+      - name: Verify dispatcher checkout identity
+        id: dispatcher_guard
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/guard-dispatcher-repo.sh
+
+      - name: Authorize target repository
+        id: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
+          CROSS_REPO_ENABLED: ${{ env.CROSS_REPO_ENABLED }}
+        run: bash scripts/authorize-target.sh
+
+      # Existing same-repository safety path remains unchanged in principle:
+      # payload target == workflow repo == checkout remote.
+      - name: Same-repo identity guard
+        id: same_guard
+        if: steps.target.outputs.mode == 'same'
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: bash scripts/guard-repo.sh
 
-      - name: Prepare agent branch
-        id: prep
-        if: steps.guard.outputs.result == 'pass'
+      # Cross-repo auth is GitHub App only. The preflight never prints values.
+      - name: Check cross-repo GitHub App configuration
+        id: cross_auth
+        if: steps.target.outputs.mode == 'cross'
+        env:
+          GH_APP_ID: ${{ secrets.GH_APP_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: bash scripts/check-cross-repo-auth.sh
+
+      - name: Create target-scoped GitHub App token
+        id: app_token
+        if: steps.target.outputs.mode == 'cross' && steps.cross_auth.outputs.result == 'pass'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_owner }}
+          repositories: ${{ steps.target.outputs.target_name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Classify GitHub App token failure
+        if: steps.target.outputs.mode == 'cross' && steps.cross_auth.outputs.result == 'pass' && steps.app_token.outcome != 'success'
+        run: |
+          source scripts/lib/common.sh
+          fail_with "$CAT_APP_TOKEN_FAILED" "could not create a target-scoped installation token"
+
+      - name: Checkout cross-repo target
+        id: target_checkout
+        if: steps.target.outputs.mode == 'cross' && steps.app_token.outcome == 'success'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.target.outputs.target_repository }}
+          token: ${{ steps.app_token.outputs.token }}
+          fetch-depth: 0
+          path: target
+          persist-credentials: true
+
+      - name: Classify target checkout failure
+        if: steps.target.outputs.mode == 'cross' && steps.app_token.outcome == 'success' && steps.target_checkout.outcome != 'success'
+        run: |
+          source scripts/lib/common.sh
+          fail_with "$CAT_TARGET_CHECKOUT" "target repository checkout failed"
+
+      - name: Cross-repo target identity guard
+        id: cross_guard
+        if: steps.target.outputs.mode == 'cross' && steps.target_checkout.outcome == 'success'
+        working-directory: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+        run: bash ../scripts/guard-target-repo.sh
+
+      - name: Same-repo dry-run inspection
+        id: dry_same
+        if: steps.target.outputs.mode == 'same' && steps.same_guard.outputs.result == 'pass' && steps.parse.outputs.dry_run == 'true'
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
           GH_TOKEN: ${{ github.token }}
+        run: bash scripts/inspect-target.sh
+
+      - name: Cross-repo dry-run inspection
+        id: dry_cross
+        if: steps.target.outputs.mode == 'cross' && steps.cross_guard.outputs.result == 'pass' && steps.parse.outputs.dry_run == 'true'
+        working-directory: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: bash ../scripts/inspect-target.sh
+
+      - name: Prepare same-repo agent branch
+        id: prep_same
+        if: steps.target.outputs.mode == 'same' && steps.same_guard.outputs.result == 'pass' && steps.parse.outputs.dry_run != 'true'
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_MODE: same
         run: bash scripts/prepare-branch.sh
 
-      - name: Run coding agent
-        id: agent
-        if: steps.prep.outputs.result == 'pass'
+      - name: Prepare cross-repo agent branch
+        id: prep_cross
+        if: steps.target.outputs.mode == 'cross' && steps.cross_guard.outputs.result == 'pass' && steps.parse.outputs.dry_run != 'true'
+        working-directory: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          DISPATCH_MODE: cross
+        run: bash ../scripts/prepare-branch.sh
+
+      - name: Run same-repo coding agent
+        id: agent_same
+        if: steps.prep_same.outputs.result == 'pass'
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -88,15 +192,41 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/run-agent.sh
 
-      - name: Commit, push, and create PR
-        id: commit
-        if: steps.agent.outputs.result == 'pass'
+      - name: Run cross-repo coding agent
+        id: agent_cross
+        if: steps.prep_cross.outputs.result == 'pass'
+        working-directory: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: bash ../scripts/run-agent.sh
+
+      - name: Commit, push, and create same-repo PR
+        id: commit_same
+        if: steps.agent_same.outputs.result == 'pass'
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
           GH_TOKEN: ${{ github.token }}
-          DEFAULT_BRANCH: ${{ steps.prep.outputs.default_branch }}
+          DEFAULT_BRANCH: ${{ steps.prep_same.outputs.default_branch }}
           OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
+          DISPATCH_MODE: same
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
         run: bash scripts/commit-push-pr.sh
+
+      - name: Commit, push, and create cross-repo PR
+        id: commit_cross
+        if: steps.agent_cross.outputs.result == 'pass'
+        working-directory: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          DEFAULT_BRANCH: ${{ steps.prep_cross.outputs.default_branch }}
+          OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
+          DISPATCH_MODE: cross
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
+        run: bash ../scripts/commit-push-pr.sh
 
       - name: Feedback and step summary
         if: always()
@@ -104,7 +234,7 @@ jobs:
           TASK_FILE: ${{ runner.temp }}/task.json
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-          AGENT_BRANCH: ${{ steps.prep.outputs.branch }}
-          PR_URL: ${{ steps.commit.outputs.pr_url }}
-          PR_NUMBER: ${{ steps.commit.outputs.pr_number }}
+          AGENT_BRANCH: ${{ steps.prep_cross.outputs.branch || steps.prep_same.outputs.branch }}
+          PR_URL: ${{ steps.commit_cross.outputs.pr_url || steps.commit_same.outputs.pr_url }}
+          PR_NUMBER: ${{ steps.commit_cross.outputs.pr_number || steps.commit_same.outputs.pr_number }}
         run: bash scripts/post-feedback.sh
