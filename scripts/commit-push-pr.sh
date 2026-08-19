@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Run repository tests, then commit, push and create a PR for the agent's
-# changes on the agent/<task_id> branch.
+# changes on the target repository. Works in same-repo and cross-repo modes.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
 TASK_FILE="${TASK_FILE:-$RUNNER_TEMP/task.json}"
@@ -15,10 +14,18 @@ model="$(jq -r '.requested_model // ""' "$TASK_FILE")"
 [ -z "$model" ] && model="${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
 branch="$(git branch --show-current)"
 default_branch="${DEFAULT_BRANCH:-master}"
-repo="${GITHUB_REPOSITORY:-}"
-run_url="${GITHUB_SERVER_URL:-https://github.com}/${repo}/actions/runs/${GITHUB_RUN_ID:-0}"
+repo="$(jq -r '.target_repository' "$TASK_FILE")"
+dispatcher_repo="${DISPATCHER_REPOSITORY:-${GITHUB_REPOSITORY:-$repo}}"
+mode="${DISPATCH_MODE:-same}"
+run_url="${GITHUB_SERVER_URL:-https://github.com}/${dispatcher_repo}/actions/runs/${GITHUB_RUN_ID:-0}"
 
-# --- tests ---
+if [ "$(jq -r '.dry_run // false' "$TASK_FILE")" = true ]; then
+  log_info "dry_run=true; skipping tests/commit/push/PR"
+  summary "| commit / push / PR | skipped (dry run) |"
+  echo "result=pass" >> "${GITHUB_OUTPUT:-/dev/null}"
+  exit 0
+fi
+
 if [ -f package.json ]; then
   log_info "running repository tests"
   if ! npm test >"$RUNNER_TEMP/npm-test.log" 2>&1; then
@@ -32,46 +39,42 @@ else
   summary "| tests | none (no package.json) |"
 fi
 
-# --- commit ---
 if [ -z "$(git status --porcelain)" ]; then
   log_warn "no changes to commit; skipping push/PR"
   summary "| commit | none (no changes) |"
+  echo "result=pass" >> "${GITHUB_OUTPUT:-/dev/null}"
   exit 0
 fi
 
 git config user.name  'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
 git add -A
 if ! git diff --cached --check >"$RUNNER_TEMP/git-check.log" 2>&1; then
-  log_error "git diff --check failed"
   tail -n 20 "$RUNNER_TEMP/git-check.log" >&2
   set_failure "$CAT_TEST"
   exit 1
 fi
 
-commit_msg="AI: ${title}"
-git commit -m "$commit_msg" >/dev/null 2>&1 \
-  || fail_with "$CAT_PUSH" "git commit failed"
+git commit -m "AI: ${title}" >/dev/null 2>&1 || {
+  [ "$mode" = cross ] && fail_with "$CAT_TARGET_PUSH" "git commit failed" || fail_with "$CAT_PUSH" "git commit failed"
+}
 commit_sha="$(git rev-parse HEAD)"
-
 summary "| commit | \`$commit_sha\` |"
 
-# --- push ---
 if ! git push --set-upstream origin "$branch" >"$RUNNER_TEMP/push.log" 2>&1; then
-  log_error "FAILURE_CATEGORY=$CAT_PUSH push failed"
   tail -n 20 "$RUNNER_TEMP/push.log" >&2
-  set_failure "$CAT_PUSH"
+  [ "$mode" = cross ] && set_failure "$CAT_TARGET_PUSH" || set_failure "$CAT_PUSH"
   exit 1
 fi
-log_info "pushed $branch"
+log_info "pushed $branch to $repo"
 
-# --- PR ---
-existing_pr="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+existing_pr="$(gh pr list --repo "$repo" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null || true)"
 if [ -n "$existing_pr" ]; then
-  log_info "PR #$existing_pr already exists for $branch"
-  summary "| PR | [#$existing_pr](${GITHUB_SERVER_URL}/${repo}/pull/$existing_pr) |"
+  pr_url="${GITHUB_SERVER_URL:-https://github.com}/${repo}/pull/${existing_pr}"
+  summary "| PR | [#$existing_pr]($pr_url) |"
   echo "pr_number=$existing_pr" >> "${GITHUB_OUTPUT:-/dev/null}"
+  echo "pr_url=$pr_url" >> "${GITHUB_OUTPUT:-/dev/null}"
+  echo "result=pass" >> "${GITHUB_OUTPUT:-/dev/null}"
   exit 0
 fi
 
@@ -85,26 +88,23 @@ pr_body="$(printf '%s\n' \
   "| Source | $source_label |" \
   "| Model | \`$model\` |" \
   "| Branch | \`$branch\` |" \
-  "| Run | $run_url |" \
+  "| Dispatcher run | $run_url |" \
   "" \
   "- Tests: pass" \
   "- \`git diff --check\`: pass")"
 
-if gh pr create \
-  --base "$default_branch" \
-  --head "$branch" \
-  --title "AI: ${title}" \
-  --body "$pr_body" >"$RUNNER_TEMP/pr-create.log" 2>&1; then
+if gh pr create --repo "$repo" --base "$default_branch" --head "$branch" \
+  --title "AI: ${title}" --body "$pr_body" >"$RUNNER_TEMP/pr-create.log" 2>&1; then
   pr_url="$(tail -n 1 "$RUNNER_TEMP/pr-create.log")"
   pr_number="$(printf '%s' "$pr_url" | sed -E 's#.*/pull/([0-9]+)/?$#\1#')"
-  [ -z "$pr_number" ] && pr_number="$(gh pr view "$branch" --json number --jq '.number' 2>/dev/null || true)"
+  [ -z "$pr_number" ] && pr_number="$(gh pr view --repo "$repo" "$branch" --json number --jq '.number' 2>/dev/null || true)"
   log_info "PR created: $pr_url"
   summary "| PR | [$pr_url]($pr_url) |"
   echo "pr_number=$pr_number" >> "${GITHUB_OUTPUT:-/dev/null}"
   echo "pr_url=$pr_url" >> "${GITHUB_OUTPUT:-/dev/null}"
+  echo "result=pass" >> "${GITHUB_OUTPUT:-/dev/null}"
 else
-  log_error "FAILURE_CATEGORY=$CAT_PR PR creation failed"
   tail -n 20 "$RUNNER_TEMP/pr-create.log" >&2
-  set_failure "$CAT_PR"
+  [ "$mode" = cross ] && set_failure "$CAT_TARGET_PR" || set_failure "$CAT_PR"
   exit 1
 fi
