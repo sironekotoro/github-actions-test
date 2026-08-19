@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run infrastructure test suite
+        run: bash tests/run-all.sh
+
+      - name: Run repository unit tests
+        run: |
+          if [ -f package.json ]; then
+            npm install --no-save >/dev/null 2>&1 || true
+            npm test
+          fi

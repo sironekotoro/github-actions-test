@@ -1,0 +1,109 @@
+name: Agent Dispatch
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      target_repository:
+        description: 'Target repository as owner/name, e.g. sironekotoro/github-actions-test'
+        required: true
+      task_id:
+        description: 'Unique task id (branch will be agent/<task_id>)'
+        required: true
+      title:
+        description: 'Short title for the PR / report'
+        required: true
+      prompt:
+        description: 'Task instructions for the coding agent'
+        required: true
+      model:
+        description: 'OpenRouter model override (e.g. openrouter/deepseek/deepseek-v4-flash)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: agent-dispatch-${{ github.event.issue.number || inputs.task_id }}
+  cancel-in-progress: false
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Only run for dispatch, or for issues labeled with an explicit agent label.
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(fromJSON('["opencode-run","agent:ready"]'), github.event.label.name) }}
+    env:
+      ACTOR_ALLOWLIST: 'sironekotoro'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Authorize actor
+        id: authorize
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE_SENDER: ${{ github.event.sender.login }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash scripts/authorize-actor.sh
+
+      - name: Parse task
+        id: parse
+        env:
+          EVENT_PATH: ${{ github.event_path }}
+          DISPATCH_INPUTS: ${{ github.event_name == 'workflow_dispatch' && toJson(inputs) || '' }}
+        run: node scripts/parse-task.mjs
+
+      - name: Repository identity guard
+        id: guard
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/guard-repo.sh
+
+      - name: Prepare agent branch
+        id: prep
+        if: steps.guard.outputs.result == 'pass'
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/prepare-branch.sh
+
+      - name: Run coding agent
+        id: agent
+        if: steps.prep.outputs.result == 'pass'
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/run-agent.sh
+
+      - name: Commit, push, and create PR
+        id: commit
+        if: steps.agent.outputs.result == 'pass'
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ steps.prep.outputs.default_branch }}
+        run: bash scripts/commit-push-pr.sh
+
+      - name: Feedback and step summary
+        if: always()
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          AGENT_BRANCH: ${{ steps.prep.outputs.branch }}
+          PR_URL: ${{ steps.commit.outputs.pr_url }}
+          PR_NUMBER: ${{ steps.commit.outputs.pr_number }}
+        run: bash scripts/post-feedback.sh
