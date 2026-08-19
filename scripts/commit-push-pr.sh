@@ -94,8 +94,9 @@ if gh pr create \
   --head "$branch" \
   --title "AI: ${title}" \
   --body "$pr_body" >"$RUNNER_TEMP/pr-create.log" 2>&1; then
-  pr_url="$(gh pr view --head "$branch" --json url,number --jq '.url' 2>/dev/null || true)"
-  pr_number="$(gh pr view --head "$branch" --json number --jq '.number' 2>/dev/null || true)"
+  pr_url="$(tail -n 1 "$RUNNER_TEMP/pr-create.log")"
+  pr_number="$(printf '%s' "$pr_url" | sed -E 's#.*/pull/([0-9]+)/?$#\1#')"
+  [ -z "$pr_number" ] && pr_number="$(gh pr view "$branch" --json number --jq '.number' 2>/dev/null || true)"
   log_info "PR created: $pr_url"
   summary "| PR | [$pr_url]($pr_url) |"
   echo "pr_number=$pr_number" >> "${GITHUB_OUTPUT:-/dev/null}"
