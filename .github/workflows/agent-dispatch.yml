@@ -95,6 +95,7 @@ jobs:
           TASK_FILE: ${{ runner.temp }}/task.json
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ steps.prep.outputs.default_branch }}
+          OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
         run: bash scripts/commit-push-pr.sh
 
       - name: Feedback and step summary
