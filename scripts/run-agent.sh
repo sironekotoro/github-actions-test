@@ -17,10 +17,10 @@ AGENT_LOG="${AGENT_LOG:-$RUNNER_TEMP/agent.log}"
 # --- build the prompt (with injected target identity) ---
 "$SCRIPT_DIR/build-agent-prompt.sh" || fail_with "$CAT_AGENT_START" "prompt build failed"
 
-model="$(jq -r '.requested_model' "$TASK_FILE")"
+model="$(jq -r '.requested_model // ""' "$TASK_FILE")"
 [ -z "$model" ] && model="${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
 
-max_runtime="$(jq -r '.max_runtime' "$TASK_FILE")"
+max_runtime="$(jq -r '.max_runtime // ""' "$TASK_FILE")"
 [ -z "$max_runtime" ] && max_runtime="${AGENT_MAX_RUNTIME:-10}"
 max_attempts="${AGENT_MAX_ATTEMPTS:-2}"
 
