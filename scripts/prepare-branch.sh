@@ -48,5 +48,6 @@ git checkout -q -b "$branch" || fail_with "$CAT_CHECKOUT" "could not create bran
 
 echo "branch=$branch" >> "${GITHUB_OUTPUT:-/dev/null}"
 echo "default_branch=$default_branch" >> "${GITHUB_OUTPUT:-/dev/null}"
+echo "result=pass" >> "${GITHUB_OUTPUT:-/dev/null}"
 summary "| agent branch | \`$branch\` |"
 summary "| default branch | \`$default_branch\` |"

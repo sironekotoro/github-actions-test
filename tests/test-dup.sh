@@ -29,7 +29,9 @@ run_prepare() { # <tmp> <task_id>
          GH_TOKEN="" bash "$PREPARE" >"$tmp/stdout.log" 2>"$tmp/stderr.log" )
   local code=$?
   local cat=""; [ -f "$tmp/failure_category" ] && cat="$(cat "$tmp/failure_category")"
-  echo "$code|$cat|$(grep '^branch=' "$tmp/out.txt" 2>/dev/null || true)"
+  local br=""; grep '^branch=' "$tmp/out.txt" >/dev/null 2>&1 && br="$(grep '^branch=' "$tmp/out.txt")"
+  local ok=""; grep '^result=' "$tmp/out.txt" >/dev/null 2>&1 && ok="$(grep '^result=' "$tmp/out.txt")"
+  echo "$code|$cat|$br|$ok"
 }
 
 # T7: existing remote branch -> duplicate blocked
@@ -38,12 +40,12 @@ git -C "$tmp/work" checkout -q -b agent/dup-task
 git -C "$tmp/work" push -q -u origin agent/dup-task
 git -C "$tmp/work" checkout -q master
 res="$(run_prepare "$tmp" "dup-task")"
-t "T7 existing branch -> TASK_ALREADY_RUNNING" "1|TASK_ALREADY_RUNNING" "$(echo "$res" | cut -d'|' -f1-2)"
+t "T7 existing branch -> TASK_ALREADY_RUNNING" "1|TASK_ALREADY_RUNNING||" "$res"
 
-# new task -> branch created
+# new task -> branch created + result=pass
 tmp="$(make_repo)"
 res="$(run_prepare "$tmp" "new-task")"
-t "T7b new task -> branch agent/new-task created" "0|branch=agent/new-task" "$(echo "$res" | cut -d'|' -f1,3)"
+t "T7b new task -> branch created + result=pass" "0||branch=agent/new-task|result=pass" "$res"
 
 # dirty working tree -> blocked
 tmp="$(make_repo)"
