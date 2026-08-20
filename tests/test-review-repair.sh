@@ -10,7 +10,10 @@ PROMPT="$ROOT/scripts/build-review-prompt.sh"
 RESUME="$ROOT/scripts/resume-review-branch.sh"
 COMMIT="$ROOT/scripts/commit-review-repair.sh"
 INITIAL_COMMIT="$ROOT/scripts/commit-push-pr.sh"
+CHECK_EXECUTOR="$ROOT/scripts/check-review-executor.sh"
+DISPATCH_EXECUTOR="$ROOT/scripts/dispatch-review-executor.sh"
 WORKFLOW="$ROOT/.github/workflows/review-repair.yml"
+EXECUTOR_WORKFLOW="$ROOT/.github/workflows/review-repair-executor.yml"
 
 make_context() { # <tmp> <target> <writer> <state> <reviewer> <head-repo> <comments-json> [body]
   local tmp="$1" target="$2" writer="$3" state="$4" reviewer="$5" head_repo="$6" comments="$7"
@@ -121,6 +124,43 @@ make_context "$tmp" sironekotoro/github-actions-test 'github-actions[bot]' CHANG
 run_parser "$tmp" true true
 t "maximum three repair attempts stops explicitly" "limit-reached|REPAIR_LIMIT_REACHED|4" "$(decision_of "$tmp")|$(cat "$tmp/failure_category")|$(jq -r .review.attempt "$tmp/task.json")"
 
+# Executor accepts only the exact attempt reserved by a trusted dispatcher
+# marker and rechecks all immutable dispatch inputs.
+reserved='[{"user":{"login":"github-actions[bot]"},"body":"<!-- agent-review-repair:v1 status=started review_id=700 attempt=1 -->"}]'
+tmp="$(make_temp)"
+make_context "$tmp" sironekotoro/github-actions-test 'github-actions[bot]' CHANGES_REQUESTED sironekotoro sironekotoro/github-actions-test "$reserved"
+RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out" TASK_FILE="$tmp/task.json" \
+  PR_FILE="$tmp/pr.json" REVIEW_FILE="$tmp/review.json" COMMENTS_FILE="$tmp/comments.json" \
+  REVIEW_REPAIR_ENABLED=true REVIEW_REPAIR_MAX=3 STRICT_REVIEWER=true ACTOR_ALLOWLIST=sironekotoro \
+  TARGET_REPOSITORY=sironekotoro/github-actions-test DISPATCHER_REPOSITORY=sironekotoro/github-actions-test \
+  EXECUTOR_RESUME=true EXPECTED_PR_NUMBER=9 EXPECTED_REVIEW_ID=700 \
+  EXPECTED_HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa EXPECTED_ATTEMPT=1 \
+  node "$PARSER" > "$tmp/stdout" 2> "$tmp/stderr"
+t "executor resumes only trusted reserved review" "0|run|1" "$?|$(decision_of "$tmp")|$(jq -r .review.attempt "$tmp/task.json")"
+
+claimed='[{"user":{"login":"github-actions[bot]"},"body":"<!-- agent-review-repair:v1 status=started review_id=700 attempt=1 -->"},{"user":{"login":"github-actions[bot]"},"body":"<!-- agent-review-repair:v1 status=executor-started review_id=700 attempt=1 -->"}]'
+tmp="$(make_temp)"
+make_context "$tmp" sironekotoro/github-actions-test 'github-actions[bot]' CHANGES_REQUESTED sironekotoro sironekotoro/github-actions-test "$claimed"
+RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out" TASK_FILE="$tmp/task.json" \
+  PR_FILE="$tmp/pr.json" REVIEW_FILE="$tmp/review.json" COMMENTS_FILE="$tmp/comments.json" \
+  REVIEW_REPAIR_ENABLED=true REVIEW_REPAIR_MAX=3 STRICT_REVIEWER=true ACTOR_ALLOWLIST=sironekotoro \
+  TARGET_REPOSITORY=sironekotoro/github-actions-test DISPATCHER_REPOSITORY=sironekotoro/github-actions-test \
+  EXECUTOR_RESUME=true EXPECTED_PR_NUMBER=9 EXPECTED_REVIEW_ID=700 \
+  EXPECTED_HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa EXPECTED_ATTEMPT=1 \
+  node "$PARSER" > "$tmp/stdout" 2> "$tmp/stderr"
+t "claimed executor review cannot run twice" "0|duplicate-review" "$?|$(decision_of "$tmp")"
+
+tmp="$(make_temp)"
+make_context "$tmp" sironekotoro/github-actions-test 'github-actions[bot]' CHANGES_REQUESTED sironekotoro sironekotoro/github-actions-test "$reserved"
+RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out" TASK_FILE="$tmp/task.json" \
+  PR_FILE="$tmp/pr.json" REVIEW_FILE="$tmp/review.json" COMMENTS_FILE="$tmp/comments.json" \
+  REVIEW_REPAIR_ENABLED=true REVIEW_REPAIR_MAX=3 STRICT_REVIEWER=true ACTOR_ALLOWLIST=sironekotoro \
+  TARGET_REPOSITORY=sironekotoro/github-actions-test DISPATCHER_REPOSITORY=sironekotoro/github-actions-test \
+  EXECUTOR_RESUME=true EXPECTED_PR_NUMBER=9 EXPECTED_REVIEW_ID=700 \
+  EXPECTED_HEAD_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb EXPECTED_ATTEMPT=1 \
+  node "$PARSER" > "$tmp/stdout" 2> "$tmp/stderr"
+t "executor rejects dispatch/head mismatch" "1|REPAIR_EXECUTOR_REQUEST_INVALID" "$?|$(cat "$tmp/failure_category")"
+
 # Cross-repo metadata follows the same validator and differs only by the
 # target-scoped principal/repository pair.
 tmp="$(make_temp)"
@@ -163,8 +203,8 @@ git -C "$repo_tmp/work" push -q -u origin agent/task-22
 head_sha="$(git -C "$repo_tmp/work" rev-parse HEAD)"
 git -C "$repo_tmp/work" checkout -q --detach master
 git -C "$repo_tmp/work" branch -D master >/dev/null
-jq -cn --arg sha "$head_sha" --arg metadata "$metadata_sha" \
-  '{target_repository:"sironekotoro/github-actions-test",metadata_sha256:$metadata,
+jq -cn --arg sha "$head_sha" --arg metadata "$metadata_sha" --arg target "$repo_tmp/origin.git" \
+  '{target_repository:$target,metadata_sha256:$metadata,
     review:{head_branch:"agent/task-22",head_sha:$sha,base_branch:"master"}}' > "$repo_tmp/task.json"
 (cd "$repo_tmp/work" && RUNNER_TEMP="$repo_tmp" GITHUB_OUTPUT="$repo_tmp/resume.out" TASK_FILE="$repo_tmp/task.json" bash "$RESUME" >/dev/null)
 t "validated existing PR branch is resumed" "agent/task-22|$head_sha" "$(git -C "$repo_tmp/work" branch --show-current)|$(git -C "$repo_tmp/work" rev-parse HEAD)"
@@ -224,11 +264,48 @@ t "existing issue-dispatch path still creates one PR" "99" "$(sed -n 's/^pr_numb
 t "initial PR carries repair provenance marker" "yes" "$(grep -q '<!-- agent-dispatch-task:v1:' "$initial_tmp/pr-body" && echo yes || echo no)"
 t "initial commit binds task metadata hash" "yes" "$(git -C "$initial_tmp/work" log -1 --format=%B | grep -q '^Agent-Task-Metadata-SHA256: ' && echo yes || echo no)"
 
+# Runner routing is explicit and fail-closed. A hosted label or missing variable
+# is never accepted as executor configuration.
+tmp="$(make_temp)"
+RUNNER_TEMP="$tmp" REVIEW_REPAIR_RUNNER_LABELS='' bash "$CHECK_EXECUTOR" >/dev/null 2> "$tmp/err"
+t "missing self-hosted labels fail closed" "1|REPAIR_EXECUTOR_UNAVAILABLE" "$?|$(cat "$tmp/failure_category")"
+tmp="$(make_temp)"
+RUNNER_TEMP="$tmp" REVIEW_REPAIR_RUNNER_LABELS='["ubuntu-latest"]' bash "$CHECK_EXECUTOR" >/dev/null 2> "$tmp/err"
+t "hosted fallback label is rejected" "1|REPAIR_EXECUTOR_UNAVAILABLE" "$?|$(cat "$tmp/failure_category")"
+tmp="$(make_temp)"
+RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out" REVIEW_REPAIR_RUNNER_LABELS='["self-hosted","review-repair","macOS","ARM64"]' \
+  bash "$CHECK_EXECUTOR" >/dev/null
+t "configured generic self-hosted labels pass" "0|result=pass" "$?|$(tr -d '\n' < "$tmp/out")"
+
+# Dispatch submission invokes workflow_dispatch once and does not inspect or
+# wait for the executor run.
+tmp="$(make_temp)"
+jq -cn '{target_repository:"sironekotoro/github-actions-test",request:{detected_at:"2026-08-21T00:00:00Z"},
+  review:{pr_number:9,id:700,head_sha:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",attempt:1}}' > "$tmp/task.json"
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MOCK_GH_CALLS"
+[ "$1 $2" = "workflow run" ]
+MOCK
+chmod +x "$tmp/bin/gh"
+PATH="$tmp/bin:$PATH" MOCK_GH_CALLS="$tmp/gh-calls" RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out" \
+  TASK_FILE="$tmp/task.json" DISPATCHER_REPOSITORY=sironekotoro/github-actions-test DISPATCHER_REF=master \
+  GITHUB_RUN_ID=123 bash "$DISPATCH_EXECUTOR" >/dev/null
+t "dispatcher submits exactly one executor workflow" "0|1" "$?|$(wc -l < "$tmp/gh-calls" | tr -d ' ')"
+t "dispatcher does not poll or wait" "absent" "$(grep -Eq '(^|[^a-z])(sleep|watch)([^a-z]|$)|gh (run view|pr checks)' "$DISPATCH_EXECUTOR" && echo present || echo absent)"
+
 # Workflow-level regression assertions: explicit event, flag, target-scoped
-# token, serialized concurrency, and no merge command.
+# token, serialized concurrency, control/executor separation, and no merge.
 t "workflow listens for submitted reviews" "yes" "$(grep -q 'pull_request_review:' "$WORKFLOW" && grep -q 'types: \[submitted\]' "$WORKFLOW" && echo yes || echo no)"
 t "workflow is feature gated" "yes" "$(grep -q "REVIEW_REPAIR_ENABLED == 'true'" "$WORKFLOW" && echo yes || echo no)"
 t "cross repo token is target scoped" "yes" "$(grep -q 'repositories: \${{ matrix.target.name }}' "$WORKFLOW" && echo yes || echo no)"
+t "hosted cross token has no contents write" "yes" "$(grep -q 'permission-contents: read' "$WORKFLOW" && ! grep -q 'permission-contents: write' "$WORKFLOW" && echo yes || echo no)"
 t "workflow never auto-merges" "absent" "$(grep -Eq 'gh pr merge|enablePullRequestAutoMerge' "$WORKFLOW" && echo present || echo absent)"
+t "hosted dispatcher never runs the agent" "absent" "$(grep -Eq 'run-agent\.sh|commit-review-repair\.sh|working-directory: target' "$WORKFLOW" && echo present || echo absent)"
+t "self-hosted executor owns agent work" "yes" "$(grep -q 'runs-on: \${{ fromJSON(vars.REVIEW_REPAIR_RUNNER_LABELS) }}' "$EXECUTOR_WORKFLOW" && grep -q 'run-agent.sh' "$EXECUTOR_WORKFLOW" && echo yes || echo no)"
+t "executor has no hosted fallback" "absent" "$(grep -Eq 'runs-on:.*ubuntu|ubuntu-latest' "$EXECUTOR_WORKFLOW" && echo present || echo absent)"
+t "executor re-authorizes dispatch actor" "yes" "$(grep -q 'Authorize executor dispatch actor' "$EXECUTOR_WORKFLOW" && grep -q 'authorize-actor.sh' "$EXECUTOR_WORKFLOW" && echo yes || echo no)"
+t "dispatcher uses short timeouts" "yes" "$(grep -Eq 'timeout-minutes: [35]' "$WORKFLOW" && ! grep -Eq 'timeout-minutes: ([1-9][0-9]|[6-9])' "$WORKFLOW" && echo yes || echo no)"
 
 finish

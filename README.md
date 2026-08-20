@@ -34,11 +34,12 @@ Review repair is a separate, feature-gated path:
 authorized CHANGES_REQUESTED review
   ├─ same repo: pull_request_review event
   └─ cross repo: central allowlist poll + target-scoped App token
-  ↓ verify dispatcher-created PR metadata / bot principal / target / base / head SHA
-  ↓ persist review-id start marker (deduplication and attempt accounting)
+  ↓ GitHub-hosted dispatcher: authorize + validate + reserve review ID/attempt
+  ↓ asynchronously dispatch one executor request, then exit without waiting
+  ↓ self-hosted executor: revalidate current metadata / bot / head SHA
   ↓ resume the existing agent/<task_id> branch
-  ↓ repair agent / tests / git diff --check
-  ↓ push the same branch; never create or merge another PR
+  ↓ repair agent / tests / git diff --check / same-branch push
+  ↓ record result; never create or merge another PR
 ```
 
 詳細:
@@ -104,7 +105,13 @@ Review repairは既定で無効。Actions repository variableを明示設定し�
 REVIEW_REPAIR_ENABLED=true   # enable; missing/false disables the whole loop
 REVIEW_REPAIR_MAX=3          # optional, accepted range 1..10
 REVIEW_REPAIR_MODEL=...      # optional model override
+REVIEW_REPAIR_RUNNER_LABELS=["self-hosted","review-repair"]
 ```
+
+最後のvariableはJSON array。`self-hosted` と専用の `review-repair` labelが必須で、
+未設定・不正な場合はdispatcherがfail-closedで停止する。長時間のagent処理を
+`ubuntu-latest` へfallbackする経路はない。self-hosted runnerには必要なlabels、
+OpenCode、Node/npm、git、`gh`、`jq`、GNU `timeout`互換コマンドを事前に用意する。
 
 即時rollbackは `REVIEW_REPAIR_ENABLED=false`。通常のIssue dispatchと既存PRには影響しない。
 

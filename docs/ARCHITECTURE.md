@@ -30,29 +30,39 @@ post-feedback.sh          Issue コメント + Step summary
 
 ## Review repair flow
 
-`review-repair.yml` is deliberately separate from initial dispatch.
+`review-repair.yml` is deliberately separate from initial dispatch and is a
+short-lived GitHub-hosted control plane. `review-repair-executor.yml` is the
+long-running self-hosted data plane.
 
 ```text
 same-repo pull_request_review:submitted
   OR scheduled cross-repo scan (one target-scoped App token per allowlisted repo)
-  -> feature flag gate
-  -> CHANGES_REQUESTED + authorized reviewer
-  -> bot-authored dispatcher metadata marker
-  -> target/head/base/branch/current head SHA validation
-  -> metadata SHA-256 trailer validation against branch history
-  -> trusted PR start marker for review-id deduplication/attempt count
-  -> resume-review-branch.sh (existing branch only)
+  -> hosted dispatcher: feature/config/actor/allowlist/metadata validation
+  -> hosted dispatcher: trusted PR start marker (dedupe + bounded reservation)
+  -> workflow_dispatch accepted by GitHub; hosted job exits without polling
+  -> self-hosted executor: authorize target before credential creation
+  -> self-hosted executor: re-fetch review and revalidate reservation/head/SHA
+  -> target checkout with persist-credentials:false + double identity guard
+  -> resume-review-branch.sh (exact existing branch only)
   -> build-review-prompt.sh (review body delimited as untrusted data)
   -> OpenCode / tests / git diff --check
   -> commit-review-repair.sh (same branch push only; no PR create/merge path)
-  -> target PR + source Issue feedback
+  -> target PR + source Issue feedback and executor timings
 ```
 
 Cross-repo reviews are polled by the central default-branch workflow because a
 `pull_request_review` event is delivered only to workflows in the repository
 that owns the PR. Polling preserves the no-target-workflow architecture and
 still uses one target-scoped, short-lived App token per matrix job. One eligible
-review is handled per target per poll.
+review is dispatched per target per poll. The poller and dispatcher never wait
+for an executor run or an agent process. Its cross-repo App token has contents
+read and pull-request write only; contents write is requested only by the
+self-hosted executor after it repeats target authorization.
+
+The executor `runs-on` value is exactly
+`fromJSON(vars.REVIEW_REPAIR_RUNNER_LABELS)`. The validated JSON label array
+must contain `self-hosted` and `review-repair`; missing or malformed
+configuration stops dispatch. There is intentionally no hosted fallback.
 
 ## Trigger / event
 
@@ -154,6 +164,9 @@ the default bound.
 | `REPAIR_BRANCH_MISMATCH` | head/base/default branch or reviewed SHA mismatch |
 | `REPAIR_LIMIT_REACHED` | configured per-PR repair attempt limit reached |
 | `REPAIR_STATE_WRITE_FAILED` | review ID start/final marker could not be persisted |
+| `REPAIR_EXECUTOR_UNAVAILABLE` | self-hosted executor labels missing or unsafe |
+| `REPAIR_EXECUTOR_DISPATCH_FAILED` | GitHub did not accept executor workflow dispatch |
+| `REPAIR_EXECUTOR_REQUEST_INVALID` | executor identifiers/ref/SHA failed input validation |
 
 単一の `exit 1` ではなく、`$RUNNER_TEMP/failure_category` に category を書き、Issue コメント・summary で報告する（Phase 16）。
 
@@ -165,7 +178,13 @@ the default bound.
 
 ## Runtime / cost guard
 
-- job `timeout-minutes: 30`、agent step は `AGENT_MAX_RUNTIME`（既定 10 分）を `timeout` で強制。
+- Initial Issue dispatch remains unchanged: job `timeout-minutes: 30`、agent step
+  は `AGENT_MAX_RUNTIME`（既定 10 分）を `timeout` で強制。
+- Review hosted control-plane jobs are bounded to 3–5 minutes and only scan,
+  validate, reserve, and submit `workflow_dispatch`.
+- The review executor is self-hosted, bounded to 45 minutes, and retains the
+  agent runtime limit. OpenCode auto-install is disabled there; the runner must
+  be provisioned before enabling the feature.
 - `AGENT_MAX_ATTEMPTS`（既定 2）。429 / rate limit / network 系の transient のみ bounded retry。logic failure は retry しない（Phase 34 / 35）。
 - agent は 1 task = 1 fresh session（Phase 39）。
 
@@ -188,6 +207,9 @@ the default bound.
 - GitHub-hosted runner の IP は可変（repo が public の場合、他者の workflow 利用は actor allowlist で防ぐ）。
 - Cross-repo review detection is polling, so repair start can lag by up to the
   schedule interval. It never broadens the App token to multiple target repos.
+- A dispatched executor workflow can remain queued if no matching self-hosted
+  runner is online. The hosted dispatcher has already exited; operators must
+  monitor the executor run and runner fleet separately.
 - PR state markers are auditable GitHub-native comments. A maintainer who can
   delete those comments can alter attempt accounting; branch concurrency and
   commit trailers still prevent simultaneous mutation and duplicate successful

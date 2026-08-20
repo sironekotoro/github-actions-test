@@ -30,6 +30,9 @@ max_attempts="${AGENT_MAX_ATTEMPTS:-2}"
 
 # --- ensure opencode is available ---
 if ! command -v opencode >/dev/null 2>&1; then
+  if [ "${AGENT_AUTO_INSTALL:-true}" != "true" ]; then
+    fail_with "$CAT_AGENT_START" "opencode is not preinstalled on the self-hosted executor"
+  fi
   log_info "opencode not found; installing opencode-ai (this can take a while)..."
   npm install -g opencode-ai >/dev/null 2>&1 || fail_with "$CAT_AGENT_START" "npm install opencode-ai failed"
 fi
@@ -56,6 +59,7 @@ is_transient() { # <logfile> -> 0 if the failure looks like a transient API erro
 
 attempt=1
 status=0
+agent_started_epoch="$(date +%s)"
 while :; do
   log_info "agent attempt $attempt/$max_attempts (model=$model, max_runtime=${max_runtime}m)"
   run_once
@@ -79,11 +83,15 @@ while :; do
   log_warn "transient API failure; retrying (attempt $attempt)"
   attempt=$((attempt + 1))
 done
+agent_finished_epoch="$(date +%s)"
+agent_runtime_seconds=$((agent_finished_epoch - agent_started_epoch))
 
 echo "model=$model" >> "${GITHUB_OUTPUT:-/dev/null}"
+echo "runtime_seconds=$agent_runtime_seconds" >> "${GITHUB_OUTPUT:-/dev/null}"
 summary "| model | \`$model\` |"
 summary "| max runtime | ${max_runtime}m |"
 summary "| attempts | $attempt |"
+summary "| agent runtime | ${agent_runtime_seconds}s |"
 
 if [ "$status" -eq 0 ]; then
   summary "| agent result | success |"

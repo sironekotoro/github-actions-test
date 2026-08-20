@@ -65,6 +65,7 @@ const comments = readJson(env.COMMENTS_FILE, "PR comments payload");
 const target = canonicalRepo(env.TARGET_REPOSITORY);
 const dispatcher = canonicalRepo(env.DISPATCHER_REPOSITORY);
 const strictReviewer = env.STRICT_REVIEWER === "true";
+const executorResume = env.EXECUTOR_RESUME === "true";
 const maxAttempts = Number.parseInt(env.REVIEW_REPAIR_MAX || "3", 10);
 
 if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) {
@@ -138,7 +139,17 @@ if (!Number.isSafeInteger(reviewId) || reviewId < 1 || !Number.isSafeInteger(prN
   fail("REPAIR_METADATA_INVALID", "PR or review id is invalid");
 }
 
-const markerPattern = /<!-- agent-review-repair:v1 status=(started|completed|failed|limit) review_id=([0-9]+) attempt=([0-9]+) -->/g;
+if (env.EXPECTED_PR_NUMBER && Number(env.EXPECTED_PR_NUMBER) !== prNumber) {
+  fail("REPAIR_EXECUTOR_REQUEST_INVALID", "executor PR number does not match authoritative PR metadata");
+}
+if (env.EXPECTED_REVIEW_ID && Number(env.EXPECTED_REVIEW_ID) !== reviewId) {
+  fail("REPAIR_EXECUTOR_REQUEST_INVALID", "executor review id does not match authoritative review metadata");
+}
+if (env.EXPECTED_HEAD_SHA && env.EXPECTED_HEAD_SHA !== pr.head.sha) {
+  fail("REPAIR_EXECUTOR_REQUEST_INVALID", "executor reviewed head SHA does not match current PR head");
+}
+
+const markerPattern = /<!-- agent-review-repair:v1 status=(started|dispatched|executor-started|completed|failed|limit) review_id=([0-9]+) attempt=([0-9]+) -->/g;
 const trustedMarkers = [];
 for (const comment of Array.isArray(comments) ? comments : []) {
   if (String(comment.user?.login ?? "").toLowerCase() !== writer) continue;
@@ -147,10 +158,29 @@ for (const comment of Array.isArray(comments) ? comments : []) {
   }
 }
 
-if (trustedMarkers.some((item) => item.reviewId === reviewId)) decision("duplicate-review");
 const startedReviewIds = new Set(trustedMarkers.filter((item) => item.status === "started").map((item) => item.reviewId));
 const attemptsUsed = startedReviewIds.size;
-const attempt = attemptsUsed + 1;
+let attempt = attemptsUsed + 1;
+
+if (executorResume) {
+  const expectedAttempt = Number(env.EXPECTED_ATTEMPT);
+  if (!Number.isSafeInteger(expectedAttempt) || expectedAttempt < 1 || expectedAttempt > maxAttempts) {
+    fail("REPAIR_EXECUTOR_REQUEST_INVALID", "executor attempt is outside the configured bound");
+  }
+  const reserved = trustedMarkers.some((item) =>
+    item.status === "started" && item.reviewId === reviewId && item.attempt === expectedAttempt
+  );
+  if (!reserved) fail("REPAIR_EXECUTOR_REQUEST_INVALID", "trusted dispatcher reservation marker is missing");
+  if (trustedMarkers.some((item) =>
+    item.reviewId === reviewId && ["executor-started", "completed", "failed", "limit"].includes(item.status)
+  )) decision("duplicate-review");
+  if (attemptsUsed !== expectedAttempt) {
+    fail("REPAIR_EXECUTOR_REQUEST_INVALID", "executor attempt does not match trusted PR attempt state");
+  }
+  attempt = expectedAttempt;
+} else if (trustedMarkers.some((item) => item.reviewId === reviewId)) {
+  decision("duplicate-review");
+}
 
 const metadataSha = crypto.createHash("sha256").update(metadataBytes).digest("hex");
 const normalizedTask = {
@@ -171,6 +201,11 @@ const normalizedTask = {
     attempt,
     attempts_used: attemptsUsed,
   },
+  request: {
+    detected_at: env.DETECTED_AT || "",
+    dispatched_at: env.DISPATCHED_AT || "",
+    dispatcher_run_id: env.DISPATCHER_RUN_ID || "",
+  },
 };
 fs.writeFileSync(taskFile, JSON.stringify(normalizedTask, null, 2));
 
@@ -184,7 +219,7 @@ const commonOutputs = {
   source: metadata.source,
 };
 
-if (attemptsUsed >= maxAttempts) {
+if (!executorResume && attemptsUsed >= maxAttempts) {
   setFailure("REPAIR_LIMIT_REACHED");
   decision("limit-reached", commonOutputs);
 }

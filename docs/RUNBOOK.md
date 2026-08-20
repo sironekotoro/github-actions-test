@@ -113,6 +113,12 @@ dispatch、cross-repo dispatchのfeature gateには影響しません。
 `REPAIR_LIMIT_REACHED` とPRコメントを残し、agentを起動しません。上限を
 引き上げる前にPRのrepair markerと履歴を確認してください。
 
+executorにはrepository variable `REVIEW_REPAIR_RUNNER_LABELS`をJSON arrayで
+設定します。最低限 `["self-hosted","review-repair"]` が必要です。
+実runnerにもこれらのlabelを付与し、必要なOS/architecture labelを
+追加してください。未設定時はhosted runnerへfallbackせず
+`REPAIR_EXECUTOR_UNAVAILABLE` で停止します。
+
 ## Review repair failure categories
 
 - `REPAIR_METADATA_INVALID`: PR内のtask metadata、review、ID、input sizeが不正。手動でbranchを再利用せず、dispatcher作成PRか確認する。
@@ -120,6 +126,9 @@ dispatch、cross-repo dispatchのfeature gateには影響しません。
 - `REPAIR_BRANCH_MISMATCH`: `agent/<task_id>`、base/default branch、review時head SHA、現在のremote SHAが不一致。新しいreviewが必要な場合がある。
 - `REPAIR_LIMIT_REACHED`: 既定3回のstart markerを消化。自動処理は停止済み。
 - `REPAIR_STATE_WRITE_FAILED`: agent起動前のreview ID markerを書けなかったため停止。App/GITHUB_TOKENのPull requests write権限を確認する。
+- `REPAIR_EXECUTOR_UNAVAILABLE`: runner label variableが未設定・不正。JSONとrunner labelsを確認する。
+- `REPAIR_EXECUTOR_DISPATCH_FAILED`: executor workflowがdefault branchに存在するか、Actions write権限、Actions制限を確認する。hosted dispatcherからexecutorの完了待ちはしない。
+- `REPAIR_EXECUTOR_REQUEST_INVALID`: target/PR/review/head SHA/attempt/refのdispatch inputが許容形式外。手動で書き換えず元reviewとdispatcher logを確認する。
 
 `APP_TOKEN_FAILED`、`TARGET_CHECKOUT_FAILED`、`TARGET_PUSH_FAILED` は通常の
 cross-repo runbookと同じ確認手順を使います。review本文やsecret値をログへ
@@ -137,3 +146,9 @@ PRコメントの次のhidden markerが正本です。
 されません。失敗原因を直した後はauthorized reviewerが新しい
 `CHANGES_REQUESTED` reviewを現在のhead SHAへ提出してください。コメントを
 削除して強制再実行する運用は推奨しません。
+
+`dispatched` 後にexecutorがqueuedのままなら、Actions画面で
+`Agent Review Repair Executor`とself-hosted runnerのonline/busy、label一致を確認します。
+dispatcherは意図的にexecutor完了を待たないため、dispatcher成功はrepair成功を
+意味しません。`executor-started` と最終 `completed` / `failed`
+marker、executor run URL、agent runtimeを確認してください。

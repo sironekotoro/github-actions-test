@@ -22,7 +22,7 @@ final_status=""
 
 if [ "$decision" = "limit-reached" ]; then
   final_status="limit"
-elif [ "$decision" = "run" ] && [ "${START_OUTCOME:-}" = "success" ]; then
+elif [ "$decision" = "run" ] && { [ "${EXECUTOR_STARTED:-}" = "true" ] || [ "${START_OUTCOME:-}" = "success" ]; }; then
   if [ "${COMMIT_OUTCOME:-}" = "success" ] && { [ -z "$category" ] || [ "$category" = "$CAT_REPAIR_LIMIT" ]; }; then
     final_status="completed"
   else
@@ -35,6 +35,10 @@ marker_already_written=false
 if [ -n "$final_status" ] && [ "$marker_already_written" = false ] && [ -n "${TARGET_GH_TOKEN:-}" ]; then
   original_category="$category"
   GH_TOKEN="$TARGET_GH_TOKEN" REPAIR_STATUS="$final_status" \
+    EXECUTOR_STARTED_AT="${EXECUTOR_STARTED_AT:-}" \
+    EXECUTOR_FINISHED_AT="${EXECUTOR_FINISHED_AT:-}" \
+    AGENT_RUNTIME_SECONDS="${AGENT_RUNTIME_SECONDS:-}" \
+    EXECUTOR_RUN_URL="${EXECUTOR_RUN_URL:-}" \
     bash "$SCRIPT_DIR/mark-review-repair.sh" >/dev/null 2>&1 || log_warn "could not post final review repair marker"
   [ -n "$original_category" ] && set_failure "$original_category"
 fi
@@ -48,6 +52,11 @@ summary "| Attempt | $attempt |"
 summary "| Decision | ${decision:-unknown} |"
 summary "| Final status | ${final_status:-not-started} |"
 summary "| Failure category | ${category:-none} |"
+summary "| Detected | $(jq -r '.request.detected_at // "n/a"' "$TASK_FILE") |"
+summary "| Dispatched | $(jq -r '.request.dispatched_at // "n/a"' "$TASK_FILE") |"
+summary "| Executor started | ${EXECUTOR_STARTED_AT:-n/a} |"
+summary "| Executor finished | ${EXECUTOR_FINISHED_AT:-n/a} |"
+summary "| Agent runtime | ${AGENT_RUNTIME_SECONDS:+${AGENT_RUNTIME_SECONDS}s}${AGENT_RUNTIME_SECONDS:-n/a} |"
 summary "| New PR | no |"
 
 if printf '%s' "$source_label" | grep -Eq '^issue#[1-9][0-9]*$'; then
@@ -65,6 +74,9 @@ if printf '%s' "$source_label" | grep -Eq '^issue#[1-9][0-9]*$'; then
       GH_TOKEN="$DISPATCHER_GH_TOKEN" gh issue comment "$issue_number" --repo "$dispatcher" \
         --body "$message
 - Review ID: $review
+- Executor started: ${EXECUTOR_STARTED_AT:-n/a}
+- Executor finished: ${EXECUTOR_FINISHED_AT:-n/a}
+- Agent runtime: ${AGENT_RUNTIME_SECONDS:+${AGENT_RUNTIME_SECONDS}s}${AGENT_RUNTIME_SECONDS:-n/a}
 - Run: $run_url" >/dev/null 2>&1 \
         || log_warn "could not post review repair feedback to source issue"
     fi

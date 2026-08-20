@@ -16,6 +16,17 @@ base_branch="$(jq -r '.review.base_branch' "$TASK_FILE")"
 metadata_sha="$(jq -r '.metadata_sha256' "$TASK_FILE")"
 review_id="$(jq -r '.review.id // ""' "$TASK_FILE")"
 attempts_used="$(jq -r '.review.attempts_used // ((.review.attempt // 1) - 1)' "$TASK_FILE")"
+target_token="${TARGET_GH_TOKEN:-}"
+
+git_target() {
+  if [ -n "$target_token" ]; then
+    local basic
+    basic="$(printf 'x-access-token:%s' "$target_token" | base64 | tr -d '\n')"
+    git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $basic" "$@"
+  else
+    git "$@"
+  fi
+}
 
 [ -z "$(git status --porcelain)" ] || fail_with "$CAT_DIRTY_TREE" "review target checkout is unexpectedly dirty"
 case "$branch" in
@@ -28,12 +39,12 @@ default_branch="$(detect_default_branch "$repo")"
 [ "$base_branch" = "$default_branch" ] \
   || fail_with "$CAT_REPAIR_BRANCH" "PR base is not the target default branch"
 
-remote_sha="$(git ls-remote --heads origin "refs/heads/$branch" | awk 'NR == 1 {print $1}')"
+remote_sha="$(git_target ls-remote --heads origin "refs/heads/$branch" | awk 'NR == 1 {print $1}')"
 [ -n "$remote_sha" ] || fail_with "$CAT_REPAIR_BRANCH" "validated PR branch no longer exists"
 [ "$remote_sha" = "$expected_sha" ] \
   || fail_with "$CAT_REPAIR_BRANCH" "PR head changed after review validation"
 
-git fetch -q origin "refs/heads/$branch:refs/remotes/origin/$branch" \
+git_target fetch -q origin "refs/heads/$branch:refs/remotes/origin/$branch" \
   || fail_with "$CAT_REPAIR_BRANCH" "could not fetch validated PR branch"
 git checkout -q -B "$branch" "refs/remotes/origin/$branch" \
   || fail_with "$CAT_REPAIR_BRANCH" "could not resume validated PR branch"

@@ -1,0 +1,256 @@
+name: Agent Review Repair Executor
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repository:
+        description: 'Validated target owner/name'
+        required: true
+      pr_number:
+        description: 'Validated existing PR number'
+        required: true
+      review_id:
+        description: 'GitHub review id reserved by the dispatcher'
+        required: true
+      reviewed_head_sha:
+        description: 'Reviewed immutable PR head SHA'
+        required: true
+      attempt:
+        description: 'Reserved bounded repair attempt'
+        required: true
+      detected_at:
+        description: 'UTC review detection timestamp'
+        required: true
+      dispatched_at:
+        description: 'UTC executor dispatch timestamp'
+        required: true
+      dispatcher_run_id:
+        description: 'Hosted dispatcher workflow run id'
+        required: true
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: review-repair-executor-${{ inputs.target_repository }}-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    # No fallback is intentional. Missing/invalid JSON fails closed, and a
+    # configured label set must include self-hosted + review-repair.
+    runs-on: ${{ fromJSON(vars.REVIEW_REPAIR_RUNNER_LABELS) }}
+    timeout-minutes: 45
+    env:
+      ACTOR_ALLOWLIST: 'sironekotoro'
+      REVIEW_REPAIR_ENABLED: 'true'
+      REVIEW_REPAIR_MAX: ${{ vars.REVIEW_REPAIR_MAX || '3' }}
+      REVIEW_REPAIR_RUNNER_LABELS: ${{ vars.REVIEW_REPAIR_RUNNER_LABELS }}
+    steps:
+      - name: Record executor start
+        id: executor_clock
+        shell: bash
+        run: echo "started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout trusted dispatcher control code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          path: dispatcher
+          persist-credentials: false
+
+      - name: Verify dispatcher checkout identity
+        working-directory: dispatcher
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/guard-dispatcher-repo.sh
+
+      - name: Authorize executor dispatch actor
+        working-directory: dispatcher
+        env:
+          EVENT_NAME: workflow_dispatch
+          GH_ACTOR: ${{ github.actor }}
+          # GITHUB_TOKEN dispatch may be attributed to github-actions[bot];
+          # direct manual dispatch remains limited to the operator allowlist.
+          ACTOR_ALLOWLIST: 'sironekotoro|github-actions[bot]'
+        run: bash scripts/authorize-actor.sh
+
+      - name: Revalidate self-hosted executor configuration
+        working-directory: dispatcher
+        run: bash scripts/check-review-executor.sh
+
+      - name: Build minimal target authorization request
+        env:
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+        run: jq -cn --arg target "$TARGET_REPOSITORY" '{target_repository:$target}' > "$RUNNER_TEMP/review-executor-request.json"
+
+      - name: Authorize requested target before credential creation
+        id: target
+        working-directory: dispatcher
+        env:
+          TASK_FILE: ${{ runner.temp }}/review-executor-request.json
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
+          CROSS_REPO_ENABLED: 'true'
+        run: bash scripts/authorize-target.sh
+
+      - name: Check cross-repo GitHub App configuration
+        if: steps.target.outputs.mode == 'cross'
+        working-directory: dispatcher
+        env:
+          GH_APP_ID: ${{ secrets.GH_APP_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: bash scripts/check-cross-repo-auth.sh
+
+      - name: Create target-scoped executor token
+        id: app_token
+        if: steps.target.outputs.mode == 'cross'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_owner }}
+          repositories: ${{ steps.target.outputs.target_name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Re-fetch and validate same-repo review request
+        id: context_same
+        if: steps.target.outputs.mode == 'same'
+        working-directory: dispatcher
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ steps.target.outputs.target_repository }}
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REVIEW_ID: ${{ inputs.review_id }}
+          STRICT_REVIEWER: 'true'
+          EXECUTOR_RESUME: 'true'
+          EXPECTED_PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_REVIEW_ID: ${{ inputs.review_id }}
+          EXPECTED_HEAD_SHA: ${{ inputs.reviewed_head_sha }}
+          EXPECTED_ATTEMPT: ${{ inputs.attempt }}
+          DETECTED_AT: ${{ inputs.detected_at }}
+          DISPATCHED_AT: ${{ inputs.dispatched_at }}
+          DISPATCHER_RUN_ID: ${{ inputs.dispatcher_run_id }}
+          TASK_FILE: ${{ runner.temp }}/task.json
+        run: bash scripts/collect-review-repair.sh
+
+      - name: Re-fetch and validate cross-repo review request
+        id: context_cross
+        if: steps.target.outputs.mode == 'cross' && steps.app_token.outcome == 'success'
+        working-directory: dispatcher
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          TARGET_REPOSITORY: ${{ steps.target.outputs.target_repository }}
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REVIEW_ID: ${{ inputs.review_id }}
+          STRICT_REVIEWER: 'true'
+          EXECUTOR_RESUME: 'true'
+          EXPECTED_PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_REVIEW_ID: ${{ inputs.review_id }}
+          EXPECTED_HEAD_SHA: ${{ inputs.reviewed_head_sha }}
+          EXPECTED_ATTEMPT: ${{ inputs.attempt }}
+          DETECTED_AT: ${{ inputs.detected_at }}
+          DISPATCHED_AT: ${{ inputs.dispatched_at }}
+          DISPATCHER_RUN_ID: ${{ inputs.dispatcher_run_id }}
+          TASK_FILE: ${{ runner.temp }}/task.json
+        run: bash scripts/collect-review-repair.sh
+
+      - name: Checkout validated same-repo head
+        id: checkout_same
+        if: steps.context_same.outputs.result == 'pass'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.target.outputs.target_repository }}
+          token: ${{ github.token }}
+          fetch-depth: 0
+          path: target
+          ref: ${{ steps.context_same.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Checkout validated cross-repo head
+        id: checkout_cross
+        if: steps.context_cross.outputs.result == 'pass'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.target.outputs.target_repository }}
+          token: ${{ steps.app_token.outputs.token }}
+          fetch-depth: 0
+          path: target
+          ref: ${{ steps.context_cross.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Re-verify target checkout identity
+        id: target_guard
+        if: steps.checkout_same.outcome == 'success' || steps.checkout_cross.outcome == 'success'
+        working-directory: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+        run: bash ../dispatcher/scripts/guard-target-repo.sh
+
+      - name: Resume exact existing PR branch
+        id: resume
+        if: steps.target_guard.outputs.result == 'pass'
+        working-directory: target
+        env:
+          GH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
+          TARGET_GH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
+          TASK_FILE: ${{ runner.temp }}/task.json
+        run: bash ../dispatcher/scripts/resume-review-branch.sh
+
+      - name: Record executor start on target PR
+        id: executor_marker
+        if: steps.resume.outputs.result == 'pass'
+        env:
+          GH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
+          TASK_FILE: ${{ runner.temp }}/task.json
+          REPAIR_STATUS: executor-started
+          EXECUTOR_STARTED_AT: ${{ steps.executor_clock.outputs.started_at }}
+          EXECUTOR_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash dispatcher/scripts/mark-review-repair.sh
+
+      - name: Run repair agent on self-hosted executor
+        id: agent
+        if: steps.executor_marker.outputs.result == 'pass'
+        working-directory: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ vars.REVIEW_REPAIR_MODEL || 'openrouter/deepseek/deepseek-v4-flash' }}
+          AGENT_AUTO_INSTALL: 'false'
+        run: bash ../dispatcher/scripts/run-agent.sh
+
+      - name: Test, commit, and push same existing PR branch
+        id: commit
+        if: steps.agent.outputs.result == 'pass'
+        working-directory: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          PUSH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
+          DISPATCH_MODE: ${{ steps.target.outputs.mode }}
+        run: bash ../dispatcher/scripts/commit-review-repair.sh
+
+      - name: Record executor finish
+        id: executor_finish
+        if: always()
+        shell: bash
+        run: echo "finished_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Executor feedback and summary
+        if: always() && (steps.context_same.outputs.decision == 'run' || steps.context_cross.outputs.decision == 'run')
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          REPAIR_DECISION: run
+          EXECUTOR_STARTED: ${{ steps.executor_marker.outcome == 'success' && 'true' || 'false' }}
+          EXECUTOR_STARTED_AT: ${{ steps.executor_clock.outputs.started_at }}
+          EXECUTOR_FINISHED_AT: ${{ steps.executor_finish.outputs.finished_at }}
+          AGENT_RUNTIME_SECONDS: ${{ steps.agent.outputs.runtime_seconds }}
+          EXECUTOR_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_OUTCOME: ${{ steps.commit.outcome }}
+          TARGET_GH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
+          DISPATCHER_GH_TOKEN: ${{ github.token }}
+        run: bash dispatcher/scripts/post-review-feedback.sh

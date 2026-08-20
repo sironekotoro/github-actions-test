@@ -5,6 +5,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/repo.sh"
 
 TASK_FILE="${TASK_FILE:-$RUNNER_TEMP/task.json}"
 title="$(jq -r '.title' "$TASK_FILE")"
@@ -14,11 +15,27 @@ attempt="$(jq -r '.review.attempt' "$TASK_FILE")"
 metadata_sha="$(jq -r '.metadata_sha256' "$TASK_FILE")"
 expected_sha="$(jq -r '.review.head_sha' "$TASK_FILE")"
 mode="${DISPATCH_MODE:-same}"
+repo="$(canonicalize_repo "$(jq -r '.target_repository' "$TASK_FILE")")"
+push_token="${PUSH_TOKEN:-}"
+# Repository tests and commit hooks must not inherit a write credential.
+unset PUSH_TOKEN GH_TOKEN TARGET_GH_TOKEN
+
+git_push_target() {
+  if [ -n "$push_token" ]; then
+    local basic
+    basic="$(printf 'x-access-token:%s' "$push_token" | base64 | tr -d '\n')"
+    git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $basic" push "$@"
+  else
+    git push "$@"
+  fi
+}
 
 [ "$(git branch --show-current)" = "$branch" ] \
   || fail_with "$CAT_REPAIR_BRANCH" "current branch is not the validated PR branch"
 [ "$(git rev-parse HEAD)" = "$expected_sha" ] \
   || fail_with "$CAT_REPAIR_BRANCH" "local branch moved before repair commit"
+[ "$(canonicalize_repo "$(repo_remote_url)")" = "$repo" ] \
+  || fail_with "$CAT_REPO_MISMATCH" "target remote changed before repair commit"
 
 if [ -f package.json ]; then
   npm test > "$RUNNER_TEMP/npm-test.log" 2>&1 || {
@@ -62,7 +79,7 @@ git commit -m "AI review repair: $title" \
   }
 
 commit_sha="$(git rev-parse HEAD)"
-git push origin "HEAD:refs/heads/$branch" > "$RUNNER_TEMP/repair-push.log" 2>&1 || {
+git_push_target origin "HEAD:refs/heads/$branch" > "$RUNNER_TEMP/repair-push.log" 2>&1 || {
   tail -n 20 "$RUNNER_TEMP/repair-push.log" >&2
   if [ "$mode" = cross ]; then
     fail_with "$CAT_TARGET_PUSH" "repair push failed"

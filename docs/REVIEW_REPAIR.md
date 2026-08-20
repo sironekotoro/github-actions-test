@@ -24,7 +24,25 @@ agent. The workflow does not auto-merge.
   a dispatcher workflow. Each matrix job obtains an installation token scoped
   to exactly one target repository.
 
-The feature flag is checked both in workflow selection and in the parser.
+Both signals enter a short GitHub-hosted dispatcher. It checks the feature and
+executor configuration, authorizes the review/target, validates provenance,
+reserves the review ID and bounded attempt, submits one `workflow_dispatch`
+request, and exits as soon as GitHub accepts it. It does not sleep, poll the run,
+wait for an agent, checkout a target working tree, or run repair commands.
+
+The separate executor workflow uses only
+`fromJSON(vars.REVIEW_REPAIR_RUNNER_LABELS)`. The JSON array must include both
+`self-hosted` and `review-repair`, for example:
+
+```text
+REVIEW_REPAIR_RUNNER_LABELS=["self-hosted","review-repair","macOS","ARM64"]
+```
+
+Missing/invalid labels fail closed. There is no `ubuntu-latest` fallback. The
+feature flag is checked in workflow selection and in the parser. The executor
+workflow must exist on the dispatcher's default branch before GitHub accepts a
+manual dispatch, so live validation is possible only after this workflow is
+merged.
 
 ## Agent PR provenance
 
@@ -60,8 +78,14 @@ that PR. At the configured maximum (default 3), the workflow posts a clear
 automatic pass.
 
 Repository/PR concurrency serializes same-repo reviews; cross-repo matrix jobs
-serialize all repairs for a target repository. Before pushing, the script checks
-the remote branch SHA again and uses a normal non-force push.
+serialize dispatch for a target repository. Executor concurrency serializes each
+target repository/PR. On start, the executor re-fetches authoritative GitHub
+state, re-authorizes its workflow actor, and requires the exact review ID, PR
+number, current reviewed head SHA, attempt number, and trusted reservation
+marker supplied by the dispatcher. A trusted `executor-started` marker is a
+claim: later workflow deliveries for that review become no-ops.
+Before pushing, the script checks the remote branch SHA again and uses a normal
+non-force push.
 
 ## Untrusted review text
 
@@ -82,6 +106,18 @@ merge operation. No-change repairs are recorded by the PR completion marker.
 
 Target PR feedback uses the target token. Source Issue feedback uses the central
 `GITHUB_TOKEN`. Cross-repo target writes never use the central token.
+
+Timeline fields record review detection, dispatch acceptance, executor start,
+executor finish, attempt number, target/PR, outcome, executor run URL, and agent
+runtime. Review text and credentials are not included in comments or summaries.
+
+The self-hosted runner must have OpenCode, Node/npm, git, GitHub CLI, `jq`, and a
+GNU `timeout`-compatible command preinstalled. Agent auto-install is disabled.
+Use a dedicated runner/runner group with access limited to this dispatcher, and
+do not place unrelated long-lived credentials in its environment. Target
+checkout does not persist credentials; test and commit hooks run after GitHub
+token variables are removed, and the target-scoped token is used only for the
+validated fetch/push operations.
 
 ## Disable / rollback
 
