@@ -15,7 +15,11 @@ PROMPT_FILE="${PROMPT_FILE:-$RUNNER_TEMP/agent-prompt.txt}"
 AGENT_LOG="${AGENT_LOG:-$RUNNER_TEMP/agent.log}"
 
 # --- build the prompt (with injected target identity) ---
-"$SCRIPT_DIR/build-agent-prompt.sh" || fail_with "$CAT_AGENT_START" "prompt build failed"
+prompt_builder="$SCRIPT_DIR/build-agent-prompt.sh"
+if [ "$(jq -r '.mode // "issue_dispatch"' "$TASK_FILE")" = "review_repair" ]; then
+  prompt_builder="$SCRIPT_DIR/build-review-prompt.sh"
+fi
+"$prompt_builder" || fail_with "$CAT_AGENT_START" "prompt build failed"
 
 model="$(jq -r '.requested_model // ""' "$TASK_FILE")"
 [ -z "$model" ] && model="${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"

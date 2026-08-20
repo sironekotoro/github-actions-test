@@ -1,0 +1,283 @@
+name: Agent Review Repair
+
+on:
+  pull_request_review:
+    types: [submitted]
+  schedule:
+    - cron: '7,17,27,37,47,57 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  same-repo-review:
+    if: ${{ vars.REVIEW_REPAIR_ENABLED == 'true' && github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: review-repair-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    env:
+      ACTOR_ALLOWLIST: 'sironekotoro'
+      REVIEW_REPAIR_ENABLED: 'true'
+      REVIEW_REPAIR_MAX: ${{ vars.REVIEW_REPAIR_MAX || '3' }}
+    steps:
+      - name: Checkout dispatcher repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Verify dispatcher checkout identity
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/guard-dispatcher-repo.sh
+
+      - name: Collect and validate submitted review
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          EVENT_ACTOR: ${{ github.actor }}
+          STRICT_REVIEWER: 'true'
+          TASK_FILE: ${{ runner.temp }}/task.json
+        run: bash scripts/collect-review-repair.sh
+
+      - name: Re-authorize same-repo target
+        id: target
+        if: steps.context.outputs.decision == 'run' || steps.context.outputs.decision == 'limit-reached'
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
+          CROSS_REPO_ENABLED: 'false'
+        run: bash scripts/authorize-target.sh
+
+      - name: Re-verify same-repo identity
+        if: steps.context.outputs.decision == 'run' && steps.target.outputs.mode == 'same'
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/guard-repo.sh
+
+      - name: Report repair limit
+        id: limit
+        if: steps.context.outputs.decision == 'limit-reached' && steps.target.outputs.mode == 'same'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_FILE: ${{ runner.temp }}/task.json
+          REPAIR_STATUS: limit
+        run: bash scripts/mark-review-repair.sh
+
+      - name: Resume validated PR branch
+        id: resume
+        if: steps.context.outputs.decision == 'run' && steps.target.outputs.mode == 'same'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_FILE: ${{ runner.temp }}/task.json
+        run: bash scripts/resume-review-branch.sh
+
+      - name: Persist review event before agent start
+        id: start
+        if: steps.resume.outputs.result == 'pass'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_FILE: ${{ runner.temp }}/task.json
+          REPAIR_STATUS: started
+        run: bash scripts/mark-review-repair.sh
+
+      - name: Run same-repo repair agent
+        id: agent
+        if: steps.start.outputs.result == 'pass'
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ vars.REVIEW_REPAIR_MODEL || 'openrouter/deepseek/deepseek-v4-flash' }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/run-agent.sh
+
+      - name: Test and push same PR branch
+        id: commit
+        if: steps.agent.outputs.result == 'pass'
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_MODE: same
+        run: bash scripts/commit-review-repair.sh
+
+      - name: Review repair feedback
+        if: always() && steps.context.outputs.decision != ''
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          REPAIR_DECISION: ${{ steps.context.outputs.decision }}
+          LIMIT_OUTCOME: ${{ steps.limit.outcome }}
+          START_OUTCOME: ${{ steps.start.outcome }}
+          COMMIT_OUTCOME: ${{ steps.commit.outcome }}
+          TARGET_GH_TOKEN: ${{ github.token }}
+          DISPATCHER_GH_TOKEN: ${{ github.token }}
+        run: bash scripts/post-review-feedback.sh
+
+  cross-repo-plan:
+    if: ${{ vars.REVIEW_REPAIR_ENABLED == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify dispatcher checkout identity
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/guard-dispatcher-repo.sh
+      - name: Build allowlisted target matrix
+        id: matrix
+        env:
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/build-review-matrix.sh
+
+  cross-repo-review:
+    needs: cross-repo-plan
+    if: ${{ needs.cross-repo-plan.outputs.matrix != '' && needs.cross-repo-plan.outputs.matrix != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.cross-repo-plan.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: review-repair-${{ matrix.target.repository }}
+      cancel-in-progress: false
+    env:
+      ACTOR_ALLOWLIST: 'sironekotoro'
+      REVIEW_REPAIR_ENABLED: 'true'
+      REVIEW_REPAIR_MAX: ${{ vars.REVIEW_REPAIR_MAX || '3' }}
+    steps:
+      - name: Checkout dispatcher repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Verify dispatcher checkout identity
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/guard-dispatcher-repo.sh
+
+      - name: Check GitHub App configuration
+        env:
+          GH_APP_ID: ${{ secrets.GH_APP_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: bash scripts/check-cross-repo-auth.sh
+
+      - name: Create target-scoped GitHub App token
+        id: app_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ matrix.target.owner }}
+          repositories: ${{ matrix.target.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Find one eligible target review
+        id: context
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          TARGET_REPOSITORY: ${{ matrix.target.repository }}
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
+          STRICT_REVIEWER: 'false'
+          TASK_FILE: ${{ runner.temp }}/task.json
+        run: bash scripts/scan-review-repairs.sh
+
+      - name: Re-authorize cross-repo target
+        id: target
+        if: steps.context.outputs.decision == 'run' || steps.context.outputs.decision == 'limit-reached'
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
+          CROSS_REPO_ENABLED: 'true'
+        run: bash scripts/authorize-target.sh
+
+      - name: Report cross-repo repair limit
+        id: limit
+        if: steps.context.outputs.decision == 'limit-reached' && steps.target.outputs.mode == 'cross'
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          TASK_FILE: ${{ runner.temp }}/task.json
+          REPAIR_STATUS: limit
+        run: bash scripts/mark-review-repair.sh
+
+      - name: Checkout reviewed target head
+        id: checkout_target
+        if: steps.context.outputs.decision == 'run' && steps.target.outputs.mode == 'cross'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.target.repository }}
+          token: ${{ steps.app_token.outputs.token }}
+          fetch-depth: 0
+          path: target
+          ref: ${{ steps.context.outputs.head_sha }}
+          persist-credentials: true
+
+      - name: Re-verify target checkout identity
+        if: steps.checkout_target.outcome == 'success'
+        working-directory: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+        run: bash ../scripts/guard-target-repo.sh
+
+      - name: Resume validated cross-repo PR branch
+        id: resume
+        if: steps.checkout_target.outcome == 'success'
+        working-directory: target
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          TASK_FILE: ${{ runner.temp }}/task.json
+        run: bash ../scripts/resume-review-branch.sh
+
+      - name: Persist review event before agent start
+        id: start
+        if: steps.resume.outputs.result == 'pass'
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          TASK_FILE: ${{ runner.temp }}/task.json
+          REPAIR_STATUS: started
+        run: bash scripts/mark-review-repair.sh
+
+      - name: Run cross-repo repair agent
+        id: agent
+        if: steps.start.outputs.result == 'pass'
+        working-directory: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ vars.REVIEW_REPAIR_MODEL || 'openrouter/deepseek/deepseek-v4-flash' }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: bash ../scripts/run-agent.sh
+
+      - name: Test and push same target PR branch
+        id: commit
+        if: steps.agent.outputs.result == 'pass'
+        working-directory: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          DISPATCH_MODE: cross
+        run: bash ../scripts/commit-review-repair.sh
+
+      - name: Review repair feedback
+        if: always() && steps.context.outputs.decision != '' && steps.context.outputs.decision != 'none'
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          REPAIR_DECISION: ${{ steps.context.outputs.decision }}
+          LIMIT_OUTCOME: ${{ steps.limit.outcome }}
+          START_OUTCOME: ${{ steps.start.outcome }}
+          COMMIT_OUTCOME: ${{ steps.commit.outcome }}
+          TARGET_GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          DISPATCHER_GH_TOKEN: ${{ github.token }}
+        run: bash scripts/post-review-feedback.sh

@@ -101,3 +101,39 @@ Agent作業後のtarget repo writeで失敗しました。
 - final agent prompt build
 
 Dry-run成功後にharmless docs-only E2Eを実施し、生成PRはmergeせず確認用に残す/closeします。
+
+## Review repair controls
+
+Review repairは通常dispatchとは独立しており、repository variable
+`REVIEW_REPAIR_ENABLED=true` のときだけ起動します。緊急停止/rollbackは
+このvariableを `false` にするか削除します。既存agent PR、通常Issue
+dispatch、cross-repo dispatchのfeature gateには影響しません。
+
+`REVIEW_REPAIR_MAX` は既定3（許容1..10）。上限到達時は
+`REPAIR_LIMIT_REACHED` とPRコメントを残し、agentを起動しません。上限を
+引き上げる前にPRのrepair markerと履歴を確認してください。
+
+## Review repair failure categories
+
+- `REPAIR_METADATA_INVALID`: PR内のtask metadata、review、ID、input sizeが不正。手動でbranchを再利用せず、dispatcher作成PRか確認する。
+- `REPAIR_PR_IDENTITY_MISMATCH`: target/base/head repo、dispatcher identity、PR bot principalのいずれかが不一致。forkや手作成PRは対象外。
+- `REPAIR_BRANCH_MISMATCH`: `agent/<task_id>`、base/default branch、review時head SHA、現在のremote SHAが不一致。新しいreviewが必要な場合がある。
+- `REPAIR_LIMIT_REACHED`: 既定3回のstart markerを消化。自動処理は停止済み。
+- `REPAIR_STATE_WRITE_FAILED`: agent起動前のreview ID markerを書けなかったため停止。App/GITHUB_TOKENのPull requests write権限を確認する。
+
+`APP_TOKEN_FAILED`、`TARGET_CHECKOUT_FAILED`、`TARGET_PUSH_FAILED` は通常の
+cross-repo runbookと同じ確認手順を使います。review本文やsecret値をログへ
+貼らないでください。review本文はtrusted commandではありません。
+
+## Duplicate / interrupted review repair
+
+PRコメントの次のhidden markerが正本です。
+
+```text
+<!-- agent-review-repair:v1 status=started review_id=... attempt=... -->
+```
+
+`started` はagent起動前に記録されるため、同じreview IDは失敗時も自動再投入
+されません。失敗原因を直した後はauthorized reviewerが新しい
+`CHANGES_REQUESTED` reviewを現在のhead SHAへ提出してください。コメントを
+削除して強制再実行する運用は推奨しません。

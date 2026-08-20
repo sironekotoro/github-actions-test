@@ -1,6 +1,6 @@
 # Architecture
 
-## Current flow
+## Initial dispatch flow
 
 ```
 ChatGPT / ユーザー
@@ -13,9 +13,13 @@ authorize-actor.sh        actor allowlist チェック
   ↓
 parse-task.mjs            JSON payload → task.json
   ↓
-guard-repo.sh             repository identity guard (今回の最重要)
+guard-dispatcher-repo.sh  dispatcher checkout identity
   ↓
-prepare-branch.sh         dirty tree / duplicate 検査 → default branch 検出 → agent/<task_id>
+authorize-target.sh       committed allowlist + same/cross mode
+  ↓
+same: guard-repo.sh       cross: target-scoped App token + target checkout + guard-target-repo.sh
+  ↓
+prepare-branch.sh         dirty tree / strict duplicate 検査 → agent/<task_id>
   ↓
 run-agent.sh              opencode run (OpenRouter, bounded runtime, bounded retry)
   ↓
@@ -24,12 +28,40 @@ commit-push-pr.sh         npm test → commit → push → PR (metadata 付き)
 post-feedback.sh          Issue コメント + Step summary
 ```
 
+## Review repair flow
+
+`review-repair.yml` is deliberately separate from initial dispatch.
+
+```text
+same-repo pull_request_review:submitted
+  OR scheduled cross-repo scan (one target-scoped App token per allowlisted repo)
+  -> feature flag gate
+  -> CHANGES_REQUESTED + authorized reviewer
+  -> bot-authored dispatcher metadata marker
+  -> target/head/base/branch/current head SHA validation
+  -> metadata SHA-256 trailer validation against branch history
+  -> trusted PR start marker for review-id deduplication/attempt count
+  -> resume-review-branch.sh (existing branch only)
+  -> build-review-prompt.sh (review body delimited as untrusted data)
+  -> OpenCode / tests / git diff --check
+  -> commit-review-repair.sh (same branch push only; no PR create/merge path)
+  -> target PR + source Issue feedback
+```
+
+Cross-repo reviews are polled by the central default-branch workflow because a
+`pull_request_review` event is delivered only to workflows in the repository
+that owns the PR. Polling preserves the no-target-workflow architecture and
+still uses one target-scoped, short-lived App token per matrix job. One eligible
+review is handled per target per poll.
+
 ## Trigger / event
 
 | trigger | 条件 | 備考 |
 |---------|------|------|
 | `issues: labeled` | label が `opencode-run` または `agent:ready` | Issue 作成だけでは実行しない（Phase 10） |
 | `workflow_dispatch` | inputs: target_repository / task_id / title / prompt | 手動投入 |
+| `pull_request_review: submitted` | same-repo + `CHANGES_REQUESTED` | review repair; feature-gated |
+| `schedule` / review workflow dispatch | allowlisted cross-repo PR scan | review repair; feature-gated |
 
 job レベルの `if` で label / event を限定。`codex-run` のような他 label では workflow は選択されない（過去の silent-skip を排除）。
 
@@ -95,6 +127,13 @@ If an AGENTS.md file exists in this repository, read it first and follow it.
 - `concurrency` group: `agent-dispatch-${{ issue.number || task_id }}`, `cancel-in-progress: false`
 - `prepare-branch.sh`: 同名ブランチ `agent/<task_id>` が origin に存在、または open PR が存在すれば `TASK_ALREADY_RUNNING` で停止（Phase 11）。
 
+Review repair never calls `prepare-branch.sh`. `resume-review-branch.sh` is a
+separate narrow path that requires the exact existing `agent/<task_id>` PR head
+branch and reviewed head SHA. Before invoking the agent, a bot-authored PR
+comment records the immutable review ID and attempt number. Any trusted marker
+for that review ID prevents re-delivery. Three distinct started markers exhaust
+the default bound.
+
 ## Failure classification
 
 | category | 発生時 |
@@ -110,6 +149,11 @@ If an AGENTS.md file exists in this repository, read it first and follow it.
 | `AGENT_TIMEOUT` | timeout 強制終了（exit 124） |
 | `TEST_FAILED` | npm test / diff --check 失敗 |
 | `PUSH_FAILED` / `PR_CREATE_FAILED` | push / PR 作成失敗 |
+| `REPAIR_METADATA_INVALID` | PR marker/task/review metadata malformed or outside input bounds |
+| `REPAIR_PR_IDENTITY_MISMATCH` | PR target/head/dispatcher/bot principal mismatch |
+| `REPAIR_BRANCH_MISMATCH` | head/base/default branch or reviewed SHA mismatch |
+| `REPAIR_LIMIT_REACHED` | configured per-PR repair attempt limit reached |
+| `REPAIR_STATE_WRITE_FAILED` | review ID start/final marker could not be persisted |
 
 単一の `exit 1` ではなく、`$RUNNER_TEMP/failure_category` に category を書き、Issue コメント・summary で報告する（Phase 16）。
 
@@ -142,4 +186,9 @@ If an AGENTS.md file exists in this repository, read it first and follow it.
 
 - `opencode run` はモデル API に依存。モデル停止時は `MODEL_API_FAILED` になる。
 - GitHub-hosted runner の IP は可変（repo が public の場合、他者の workflow 利用は actor allowlist で防ぐ）。
-- cross-repo dispatch（別 repo への agent 実行）は未実装。`GITHUB_TOKEN` は repo 境界を越えられないため、必要な場合は GitHub App / repo-level token の追加設計が必要（Phase 6）。
+- Cross-repo review detection is polling, so repair start can lag by up to the
+  schedule interval. It never broadens the App token to multiple target repos.
+- PR state markers are auditable GitHub-native comments. A maintainer who can
+  delete those comments can alter attempt accounting; branch concurrency and
+  commit trailers still prevent simultaneous mutation and duplicate successful
+  pushes.
