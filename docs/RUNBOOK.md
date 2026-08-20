@@ -1,42 +1,103 @@
-# Runbook — `REPOSITORY_IDENTITY_MISMATCH`
+# Runbook — Agent Dispatch failures
 
-agent が起動せず `REPOSITORY_IDENTITY_MISMATCH` で停止した場合の対応手順。
+Agent Dispatch は、異常時に agent を起動するより **fail-safe 停止**を優先します。Issue/Actions summary の failure category を起点に確認してください。
 
-## 概要
+## `REPOSITORY_IDENTITY_MISMATCH`
 
-Task の `target_repository` と、実際に workflow が動いている repository（`GITHUB_REPOSITORY`）または checkout された `git remote` が一致しないと発生します。
-**agent は起動していません**（fail-safe stop）。
+意味: task の `target_repository` と、dispatcher checkout または cross-repo target checkout の `git remote` が一致しません。
 
-## 原因となりうるケース
+**agent は起動していません。**
 
-1. Issue / dispatch の `target_repository` が別 repo（例: zengin 向けの指示を rapidgator 側 agent へ貼り付けた過去事例に相当）。
-2. workflow が想定と異なる repo に配置された。
-3. チェックアウトされた remote URL が想定と異なる（clone 元の取り違え）。
+確認:
 
-## 対応手順
+1. task JSON / dispatch input の `target_repository`
+2. Actions summary の dispatcher / target identity
+3. 対象repo名を修正して再dispatch
 
-1. **Task の target を確認**
-   - Issue の場合は Issue 本文の JSON の `target_repository`
-   - dispatch の場合は入力欄の `target_repository`
-   - Actions run の Step summary の `target (payload)` 欄にも表示される。
+Cross-repoでも target checkout 後に同じguardが走るため、誤repoをcheckoutした場合はここで停止します。
 
-2. **GitHub repository を確認**
-   - Actions run の URL から、どの repo で run したかを確認（`GITHUB_REPOSITORY`）。
-   - 手元でも確認する場合:
-     ```bash
-     git remote -v
-     ```
+## `TARGET_REPOSITORY_NOT_ALLOWED`
 
-3. **一致させる**
-   - タスク対象が別 repo の場合: **この中央基盤（`sironekotoro/github-actions-test`）では実行できません。** target をこの repo のタスクに直すか、対象 repo 側に適切な dispatch 基盤を用意してください。
-   - 記入ミスの場合: `target_repository` を正しい値に修正して再 dispatch（Issue なら label を外して付け直し、または修正した dispatch を実行）。
+対象repoが `config/allowed-repositories.txt` にありません。
 
-4. **再 dispatch**
-   - workflow_dispatch: 修正後の inputs で再実行。
-   - Issue: `target_repository` を修正 → 新しい Issue か修正後に `opencode-run` label を付け直す。
+- typoならtaskを修正
+- 本当に新しい対象repoなら、repo所有権・必要性を確認してallowlistへ明示追加
+- prompt本文の指定だけではallowlistを変更できません
 
-## 確認ポイント
+## `CROSS_REPO_AUTH_UNAVAILABLE`
 
-- 正しい組み合わせ: `target (payload)` = `actual (GITHUB_REPOSITORY)` = `checked-out remote` がすべて同値。
-- この run では agent step は実行されず、issue へ `REPOSITORY_IDENTITY_MISMATCH` のコメントが投稿されます。
-- どうしても別 repo で agent を動かしたい場合: `GITHUB_TOKEN` は repo 境界を越えられないため、GitHub App / 各 repo 用 token の設計が必要（docs/ARCHITECTURE.md 参照）。
+Cross-repo pathが無効、またはGitHub App secretsが未設定です。
+
+Actions variable:
+
+```text
+CROSS_REPO_ENABLED=true
+```
+
+Repository secrets:
+
+```text
+GH_APP_ID
+GH_APP_PRIVATE_KEY
+```
+
+未設定の場合は `docs/CROSS_REPO_DISPATCH.md` の5分セットアップを実施してください。ログに `LIVE_CROSS_REPO_E2E_BLOCKED_BY_APP_SETUP` が出る場合、実装ではなくoperator setup待ちです。
+
+## `APP_TOKEN_FAILED` / `APP_INSTALLATION_NOT_FOUND`
+
+GitHub App installation tokenを作成できません。
+
+確認:
+
+1. Appがtarget repoにinstallされているか
+2. Contents / Pull requests permissionが承認済みか
+3. `GH_APP_ID` / `GH_APP_PRIVATE_KEY` secret名が正しいか
+4. App権限変更後にinstallation側で再承認が必要になっていないか
+
+Secret値をIssueやログへ貼らないでください。
+
+## `TARGET_CHECKOUT_FAILED` / `TARGET_PERMISSION_DENIED`
+
+App token生成後のtarget checkout/API操作に失敗しました。
+
+- App installation対象repoか確認
+- repo名/visibilityを確認
+- App permissionを確認
+- 403は無条件retryしない
+
+## `TARGET_DEFAULT_BRANCH_NOT_FOUND`
+
+Target repoのdefault branchを判定できません。
+
+通常は origin/HEAD -> GitHub API -> `master`/`main` probe の順で判定します。repo metadataとremote branchを確認してください。
+
+## `TASK_ALREADY_RUNNING`
+
+同じ `agent/<task_id>` branchまたはopen PRが既に存在します。
+
+既存run/PRを確認し、新しい仕事なら新しいtask idを発行してください。既存branchを強制上書きしないでください。
+
+## `TARGET_PUSH_FAILED` / `TARGET_PR_CREATE_FAILED`
+
+Agent作業後のtarget repo writeで失敗しました。
+
+- installation tokenのContents / Pull requests write権限
+- branch protection
+- target remote
+- default branch
+
+を確認。main/masterへ直接pushする回避策は使いません。
+
+## Dry-runでの確認
+
+初回cross-repo設定では `dry_run=true` を使用してください。以下だけを確認し、targetを変更しません。
+
+- actor authorization
+- allowlist
+- GitHub App token
+- target checkout
+- double identity guard
+- default branch
+- final agent prompt build
+
+Dry-run成功後にharmless docs-only E2Eを実施し、生成PRはmergeせず確認用に残す/closeします。

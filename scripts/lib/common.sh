@@ -5,14 +5,13 @@
 #   - failure category is written to $FAILURE_FILE so the workflow can report
 #     a precise, machine-readable cause instead of a bare `exit 1`.
 #   - a short summary table is appended to $GITHUB_STEP_SUMMARY when present.
-#   - prompt / task bodies are NEVER echoed by these helpers.
+#   - prompt / task bodies and secret values are NEVER echoed by these helpers.
 set -uo pipefail
 
 FAILURE_FILE="${RUNNER_TEMP:-/tmp}/failure_category"
 SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-/tmp/agent_step_summary.md}"
 
 mkdir -p "$(dirname "$FAILURE_FILE")"
-# preserve the failure category across workflow steps; do not truncate on source
 [ -f "$FAILURE_FILE" ] || : > "$FAILURE_FILE"
 mkdir -p "$(dirname "$SUMMARY_FILE")"
 [ -f "$SUMMARY_FILE" ] || : > "$SUMMARY_FILE"
@@ -31,12 +30,22 @@ CAT_TEST="TEST_FAILED"
 CAT_PUSH="PUSH_FAILED"
 CAT_PR="PR_CREATE_FAILED"
 
+# Cross-repository dispatch categories.
+CAT_TARGET_NOT_ALLOWED="TARGET_REPOSITORY_NOT_ALLOWED"
+CAT_CROSS_REPO_AUTH_UNAVAILABLE="CROSS_REPO_AUTH_UNAVAILABLE"
+CAT_APP_INSTALLATION_NOT_FOUND="APP_INSTALLATION_NOT_FOUND"
+CAT_APP_TOKEN_FAILED="APP_TOKEN_FAILED"
+CAT_TARGET_CHECKOUT="TARGET_CHECKOUT_FAILED"
+CAT_TARGET_PERMISSION="TARGET_PERMISSION_DENIED"
+CAT_TARGET_DEFAULT_BRANCH="TARGET_DEFAULT_BRANCH_NOT_FOUND"
+CAT_TARGET_PUSH="TARGET_PUSH_FAILED"
+CAT_TARGET_PR="TARGET_PR_CREATE_FAILED"
+
 log_info()  { printf '[INFO]  %s\n' "$*"; }
 log_warn()  { printf '[WARN]  %s\n' "$*" >&2; }
 log_error() { printf '[ERROR] %s\n' "$*" >&2; }
 
 set_failure() { printf '%s\n' "$1" > "$FAILURE_FILE"; }
-
 get_failure() { cat "$FAILURE_FILE" 2>/dev/null || echo UNKNOWN; }
 
 fail_with() {
@@ -48,7 +57,7 @@ fail_with() {
 
 summary() { printf '%s\n' "$*" >> "$SUMMARY_FILE"; }
 
-sha256_of() { # <file> -> sha256 (never prints contents)
+sha256_of() {
   command -v shasum >/dev/null 2>&1 \
     && shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 \
     || openssl dgst -sha256 "$1" 2>/dev/null | awk '{print $NF}'

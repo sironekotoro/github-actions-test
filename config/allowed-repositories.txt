@@ -1,0 +1,9 @@
+# Public repositories allowed for agent dispatch from this PUBLIC dispatcher.
+# Canonical owner/name form only. One repository per line.
+#
+# Do not add private repository names here: workflow inputs/logs/summaries for
+# this repository are public. Use a private dispatcher before enabling private
+# target repositories.
+sironekotoro/github-actions-test
+sironekotoro/zengin-pl
+sironekotoro/sironekotoro-blog
