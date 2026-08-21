@@ -14,6 +14,7 @@ CONTAINER_AGENT="$ROOT/scripts/run-review-repair-agent-container.sh"
 AGENT_DOCKERFILE="$ROOT/docker/review-repair-agent.Dockerfile"
 EGRESS_DOCKERFILE="$ROOT/docker/review-repair-egress.Dockerfile"
 SQUID_CONFIG="$ROOT/docker/review-repair-squid.conf"
+CLEANUP="$ROOT/scripts/lib/review-repair-cleanup.sh"
 INITIAL_COMMIT="$ROOT/scripts/commit-push-pr.sh"
 CHECK_EXECUTOR="$ROOT/scripts/check-review-executor.sh"
 DISPATCH_EXECUTOR="$ROOT/scripts/dispatch-review-executor.sh"
@@ -314,6 +315,8 @@ t "self-hosted executor owns agent work" "yes" "$(grep -q 'runs-on: \${{ fromJSO
 t "executor has no hosted fallback" "absent" "$(grep -Eq 'runs-on:.*ubuntu|ubuntu-latest' "$EXECUTOR_WORKFLOW" && echo present || echo absent)"
 t "executor re-authorizes dispatch actor" "yes" "$(grep -q 'Authorize executor dispatch actor' "$EXECUTOR_WORKFLOW" && grep -q 'authorize-actor.sh' "$EXECUTOR_WORKFLOW" && echo yes || echo no)"
 t "executor rechecks authoritative feature flag before checkout" "yes" "$(grep -q "vars.REVIEW_REPAIR_ENABLED == 'true'" "$FEATURE_GATE" && grep -q 'Re-check review repair kill switch' "$FEATURE_GATE" && grep -q 'actions/variables/REVIEW_REPAIR_ENABLED' "$FEATURE_GATE" && echo yes || echo no)"
+feature_gate_block="$(sed -n '/Re-check review repair kill switch/,/Record executor start/p' "$FEATURE_GATE")"
+t "kill switch uses dedicated Variables-read credential" "yes" "$(printf '%s\n' "$feature_gate_block" | grep -q 'REVIEW_REPAIR_VARIABLES_TOKEN' && ! printf '%s\n' "$feature_gate_block" | grep -Eq '^[[:space:]]+GH_TOKEN:' && printf '%s\n' "$feature_gate_block" | grep -q 'X-GitHub-Api-Version' && echo yes || echo no)"
 t "executor builds and uses isolated repair images" "yes" "$(grep -q 'Build isolated review-repair images' "$EXECUTOR_WORKFLOW" && grep -q 'run-review-repair-agent-container.sh' "$EXECUTOR_WORKFLOW" && echo yes || echo no)"
 t "agent container is non-root and hardened" "yes" "$(grep -q -- '--user "\$runner_uid:\$runner_gid"' "$CONTAINER_AGENT" && grep -q -- '--read-only' "$CONTAINER_AGENT" && grep -q -- '--cap-drop=ALL' "$CONTAINER_AGENT" && grep -q -- '--security-opt=no-new-privileges' "$CONTAINER_AGENT" && echo yes || echo no)"
 t "agent sees no host Git credentials or Docker socket" "yes" "$(grep -q -- '--exclude=.git' "$CONTAINER_AGENT" && ! grep -Eq 'docker\.sock|GITHUB_TOKEN|GH_TOKEN|TARGET_GH_TOKEN|PUSH_TOKEN' "$CONTAINER_AGENT" && echo yes || echo no)"
@@ -323,6 +326,22 @@ t "agent image contains trusted runtime only" "yes" "$(grep -q 'COPY scripts/run
 t "agent image pins the OpenCode runtime" "yes" "$(grep -q 'opencode-ai@1.18.16' "$AGENT_DOCKERFILE" && echo yes || echo no)"
 t "prebuilt prompt mode is explicit" "yes" "$(grep -q 'AGENT_USE_PREBUILT_PROMPT' "$CONTAINER_AGENT" && grep -q 'AGENT_USE_PREBUILT_PROMPT' "$ROOT/scripts/run-agent.sh" && echo yes || echo no)"
 t "untrusted agent patch is checked before host import" "yes" "$(grep -q 'git -C "\$target_dir" apply --check' "$CONTAINER_AGENT" && grep -q 'git -C "\$target_dir" apply --whitespace=error' "$CONTAINER_AGENT" && echo yes || echo no)"
+
+# The host staging copy can contain target source and review text. Cleanup must
+# run both on the normal path and when an enclosing command fails.
+tmp="$(make_temp)"
+staging="$tmp/review-repair-agent.success"
+mkdir -p "$staging"
+source "$CLEANUP"
+cleanup_review_repair_staging "$staging" "$tmp"
+t "review repair staging cleanup succeeds" "absent" "$([ -e "$staging" ] && echo present || echo absent)"
+staging="$tmp/review-repair-agent.failure"
+mkdir -p "$staging"
+(
+  trap 'cleanup_review_repair_staging "$staging" "$tmp"' EXIT
+  false
+) >/dev/null 2>&1
+t "review repair staging cleanup runs on failure" "absent" "$([ -e "$staging" ] && echo present || echo absent)"
 t "dispatcher uses short timeouts" "yes" "$(grep -Eq 'timeout-minutes: [35]' "$WORKFLOW" && ! grep -Eq 'timeout-minutes: ([1-9][0-9]|[6-9])' "$WORKFLOW" && echo yes || echo no)"
 
 finish

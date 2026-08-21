@@ -122,6 +122,11 @@ executorにはrepository variable `REVIEW_REPAIR_RUNNER_LABELS`をJSON arrayで
 executor開始時にも GitHub API で現在の `REVIEW_REPAIR_ENABLED` を再確認します。
 OFFまたは安全に確認できない場合は `REPAIR_DISABLED` で停止し、checkout、agent、
 target writeは行いません。
+`REVIEW_REPAIR_VARIABLES_TOKEN` にはdispatcher repositoryだけを対象にした
+fine-grained PATを設定し、Repository permissionsの **Variables: read** だけを
+付与してください（GitHubが必須とするMetadata: readは自動的に含まれます）。未設定・
+期限切れ・権限不足は安全な停止となります。このtokenをagent、target repository、
+Docker containerへ渡してはいけません。
 
 review-repair executor runnerにはDocker daemonとnon-root runner userのDocker利用権限が
 必要です。Dockerまたはtrusted image buildが使えない場合は、agentをhost上で実行せず

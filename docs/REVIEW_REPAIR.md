@@ -43,9 +43,13 @@ feature flag is checked in workflow selection and in the parser. The executor
 also reads the current repository Actions variable through the GitHub API as its
 first step. A queued/manual executor therefore fails closed before checkout,
 credential creation, agent execution, or target writes if an administrator has
-turned the flag off. The executor workflow must exist on the dispatcher's
-default branch before GitHub accepts a manual dispatch, so live validation is
-possible only after this workflow is merged.
+turned the flag off. This read uses the dedicated
+`REVIEW_REPAIR_VARIABLES_TOKEN` secret: a dispatcher-repository fine-grained
+PAT with **Variables: read** repository permission (and GitHub's mandatory
+Metadata: read). It is never passed to the agent or target checkout, and a
+missing/invalid token fails closed. The executor workflow must exist on the
+dispatcher's default branch before GitHub accepts a manual dispatch, so live
+validation is possible only after this workflow is merged.
 
 ## Agent PR provenance
 

@@ -6,10 +6,12 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/review-repair-cleanup.sh"
 
 target_dir="${TARGET_DIR:-$PWD}"
 task_file="${TASK_FILE:-${RUNNER_TEMP:-/tmp}/task.json}"
 runtime_root="${RUNNER_TEMP:-/tmp}"
+agent_root=""
 run_key="${GITHUB_RUN_ID:-$$}"
 run_key="$(printf '%s' "$run_key" | tr -cd '[:alnum:]')"
 agent_image="review-repair-agent:$run_key"
@@ -31,9 +33,12 @@ private_network="review-repair-private-$run_key"
 egress_network="review-repair-egress-net-$run_key"
 proxy_name="review-repair-proxy-$run_key"
 cleanup_networks() {
+  local status="$?"
   docker rm -f "$proxy_name" >/dev/null 2>&1 || true
   docker network rm "$private_network" >/dev/null 2>&1 || true
   docker network rm "$egress_network" >/dev/null 2>&1 || true
+  cleanup_review_repair_staging "$agent_root" "$runtime_root" || true
+  return "$status"
 }
 trap cleanup_networks EXIT
 
