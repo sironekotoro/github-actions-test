@@ -40,9 +40,12 @@ REVIEW_REPAIR_RUNNER_LABELS=["self-hosted","review-repair","macOS","ARM64"]
 
 Missing/invalid labels fail closed. There is no `ubuntu-latest` fallback. The
 feature flag is checked in workflow selection and in the parser. The executor
-workflow must exist on the dispatcher's default branch before GitHub accepts a
-manual dispatch, so live validation is possible only after this workflow is
-merged.
+also reads the current repository Actions variable through the GitHub API as its
+first step. A queued/manual executor therefore fails closed before checkout,
+credential creation, agent execution, or target writes if an administrator has
+turned the flag off. The executor workflow must exist on the dispatcher's
+default branch before GitHub accepts a manual dispatch, so live validation is
+possible only after this workflow is merged.
 
 ## Agent PR provenance
 
@@ -111,13 +114,22 @@ Timeline fields record review detection, dispatch acceptance, executor start,
 executor finish, attempt number, target/PR, outcome, executor run URL, and agent
 runtime. Review text and credentials are not included in comments or summaries.
 
-The self-hosted runner must have OpenCode, Node/npm, git, GitHub CLI, `jq`, and a
-GNU `timeout`-compatible command preinstalled. Agent auto-install is disabled.
-Use a dedicated runner/runner group with access limited to this dispatcher, and
-do not place unrelated long-lived credentials in its environment. Target
-checkout does not persist credentials; test and commit hooks run after GitHub
-token variables are removed, and the target-scoped token is used only for the
-validated fetch/push operations.
+The self-hosted runner must have Docker available to its non-root runner user,
+git, GitHub CLI, `jq`, and a GNU `timeout`-compatible command. The executor
+builds trusted images from the dispatcher default-branch checkout, then runs
+OpenCode and repository `npm test` in a disposable container. The agent sees
+only a `.git`-free copy of the validated target worktree, an immutable prompt,
+and `OPENROUTER_API_KEY`. It does not receive the host HOME, SSH keys,
+gh/Codex/OpenCode configuration, GitHub/App tokens, the Docker socket, or any
+other repository. The agent container is non-root, has a read-only root,
+temporary HOME/tmp, all Linux capabilities dropped, and no direct external
+route. A separate proxy is the sole egress path and permits HTTPS CONNECT only
+to `openrouter.ai`; the outer executor imports only a checked patch and does
+not run target tests or hooks. The API key is unset before repository tests run,
+and the container's prompt/log paths are temporary and not uploaded as
+artifacts. Target checkout does not persist credentials,
+and the target-scoped token is used only for authenticated validated remote
+reads and the final non-force push.
 
 ## Disable / rollback
 

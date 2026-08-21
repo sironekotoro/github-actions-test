@@ -30,6 +30,20 @@ git_push_target() {
   fi
 }
 
+# Read the remote state with the saved write token, but only for this one
+# authenticated operation. The token is deliberately not restored to the
+# environment used by repository tests or commit hooks.
+git_ls_remote_target() {
+  if [ -n "$push_token" ]; then
+    local basic
+    basic="$(printf 'x-access-token:%s' "$push_token" | base64 | tr -d '\n')"
+    git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $basic" \
+      ls-remote "$@"
+  else
+    git ls-remote "$@"
+  fi
+}
+
 [ "$(git branch --show-current)" = "$branch" ] \
   || fail_with "$CAT_REPAIR_BRANCH" "current branch is not the validated PR branch"
 [ "$(git rev-parse HEAD)" = "$expected_sha" ] \
@@ -37,12 +51,14 @@ git_push_target() {
 [ "$(canonicalize_repo "$(repo_remote_url)")" = "$repo" ] \
   || fail_with "$CAT_REPO_MISMATCH" "target remote changed before repair commit"
 
-if [ -f package.json ]; then
+if [ -f package.json ] && [ "${REPAIR_TESTS_ALREADY_RAN:-false}" != "true" ]; then
   npm test > "$RUNNER_TEMP/npm-test.log" 2>&1 || {
     tail -n 40 "$RUNNER_TEMP/npm-test.log" >&2
     fail_with "$CAT_TEST" "repository tests failed"
   }
   summary "| tests | pass |"
+elif [ -f package.json ]; then
+  summary "| tests | pass (isolated agent container) |"
 fi
 
 if [ -z "$(git status --porcelain)" ]; then
@@ -62,11 +78,13 @@ git diff --cached --check > "$RUNNER_TEMP/git-check.log" 2>&1 || {
   fail_with "$CAT_TEST" "git diff --check failed"
 }
 
-remote_sha="$(git ls-remote --heads origin "refs/heads/$branch" | awk 'NR == 1 {print $1}')"
+remote_sha="$(git_ls_remote_target --heads origin "refs/heads/$branch" | awk 'NR == 1 {print $1}')"
 [ "$remote_sha" = "$expected_sha" ] \
   || fail_with "$CAT_REPAIR_BRANCH" "remote PR branch moved during repair"
 
-git commit -m "AI review repair: $title" \
+# The agent never sees .git, but disable hooks explicitly as a second boundary:
+# the trusted outer stage must not execute repository-controlled hook code.
+git -c core.hooksPath=/dev/null commit -m "AI review repair: $title" \
   -m "Agent-Repair-Review-ID: $review_id" \
   -m "Agent-Repair-Attempt: $attempt" \
   -m "Agent-Task-Metadata-SHA256: $metadata_sha" >/dev/null 2>&1 \

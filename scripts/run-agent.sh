@@ -14,18 +14,25 @@ TASK_FILE="${TASK_FILE:-$RUNNER_TEMP/task.json}"
 PROMPT_FILE="${PROMPT_FILE:-$RUNNER_TEMP/agent-prompt.txt}"
 AGENT_LOG="${AGENT_LOG:-$RUNNER_TEMP/agent.log}"
 
-# --- build the prompt (with injected target identity) ---
-prompt_builder="$SCRIPT_DIR/build-agent-prompt.sh"
-if [ "$(jq -r '.mode // "issue_dispatch"' "$TASK_FILE")" = "review_repair" ]; then
-  prompt_builder="$SCRIPT_DIR/build-review-prompt.sh"
+# A trusted outer executor explicitly enables this mode for the isolated
+# review-repair container. A stale prompt file must never alter ordinary agent
+# dispatch behavior.
+if [ "${AGENT_USE_PREBUILT_PROMPT:-false}" = "true" ]; then
+  [ -s "$PROMPT_FILE" ] || fail_with "$CAT_AGENT_START" "trusted prebuilt prompt is missing"
+  model="${AGENT_MODEL:-${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}}"
+  max_runtime="${AGENT_MAX_RUNTIME:-10}"
+else
+  # --- build the prompt (with injected target identity) ---
+  prompt_builder="$SCRIPT_DIR/build-agent-prompt.sh"
+  if [ "$(jq -r '.mode // "issue_dispatch"' "$TASK_FILE")" = "review_repair" ]; then
+    prompt_builder="$SCRIPT_DIR/build-review-prompt.sh"
+  fi
+  "$prompt_builder" || fail_with "$CAT_AGENT_START" "prompt build failed"
+  model="$(jq -r '.requested_model // ""' "$TASK_FILE")"
+  [ -z "$model" ] && model="${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
+  max_runtime="$(jq -r '.max_runtime // ""' "$TASK_FILE")"
+  [ -z "$max_runtime" ] && max_runtime="${AGENT_MAX_RUNTIME:-10}"
 fi
-"$prompt_builder" || fail_with "$CAT_AGENT_START" "prompt build failed"
-
-model="$(jq -r '.requested_model // ""' "$TASK_FILE")"
-[ -z "$model" ] && model="${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
-
-max_runtime="$(jq -r '.max_runtime // ""' "$TASK_FILE")"
-[ -z "$max_runtime" ] && max_runtime="${AGENT_MAX_RUNTIME:-10}"
 max_attempts="${AGENT_MAX_ATTEMPTS:-2}"
 
 # --- ensure opencode is available ---

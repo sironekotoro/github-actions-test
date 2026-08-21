@@ -119,6 +119,19 @@ executorにはrepository variable `REVIEW_REPAIR_RUNNER_LABELS`をJSON arrayで
 追加してください。未設定時はhosted runnerへfallbackせず
 `REPAIR_EXECUTOR_UNAVAILABLE` で停止します。
 
+executor開始時にも GitHub API で現在の `REVIEW_REPAIR_ENABLED` を再確認します。
+OFFまたは安全に確認できない場合は `REPAIR_DISABLED` で停止し、checkout、agent、
+target writeは行いません。
+
+review-repair executor runnerにはDocker daemonとnon-root runner userのDocker利用権限が
+必要です。Dockerまたはtrusted image buildが使えない場合は、agentをhost上で実行せず
+`AGENT_START_FAILED`で停止します。agentとrepository testsは`.git`なしのtarget作業コピー
+だけをmountした使い捨てcontainerで実行され、host HOME、SSH、`gh`/Codex/OpenCode
+credentials、GitHub/App token、Docker socketはcontainerへ渡しません。agent networkは
+internalで、OpenRouter HTTPSだけを許可する別proxy経由で通信します。
+`OPENROUTER_API_KEY` はagent実行時だけcontainer内に存在し、repository test実行前に
+unsetされます。agent log/promptはhostのartifactやPR feedbackへ渡しません。
+
 ## Review repair failure categories
 
 - `REPAIR_METADATA_INVALID`: PR内のtask metadata、review、ID、input sizeが不正。手動でbranchを再利用せず、dispatcher作成PRか確認する。
@@ -129,6 +142,7 @@ executorにはrepository variable `REVIEW_REPAIR_RUNNER_LABELS`をJSON arrayで
 - `REPAIR_EXECUTOR_UNAVAILABLE`: runner label variableが未設定・不正。JSONとrunner labelsを確認する。
 - `REPAIR_EXECUTOR_DISPATCH_FAILED`: executor workflowがdefault branchに存在するか、Actions write権限、Actions制限を確認する。hosted dispatcherからexecutorの完了待ちはしない。
 - `REPAIR_EXECUTOR_REQUEST_INVALID`: target/PR/review/head SHA/attempt/refのdispatch inputが許容形式外。手動で書き換えず元reviewとdispatcher logを確認する。
+- `REPAIR_DISABLED`: executor開始時のauthoritativeなrepository variable確認でfeature flagがOFF、または安全に確認できなかった。agent・checkout・target writeは行われていない。
 
 `APP_TOKEN_FAILED`、`TARGET_CHECKOUT_FAILED`、`TARGET_PUSH_FAILED` は通常の
 cross-repo runbookと同じ確認手順を使います。review本文やsecret値をログへ

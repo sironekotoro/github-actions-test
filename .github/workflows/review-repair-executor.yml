@@ -29,6 +29,7 @@ on:
         required: true
 
 permissions:
+  actions: read
   contents: write
   issues: write
   pull-requests: write
@@ -41,14 +42,37 @@ jobs:
   execute:
     # No fallback is intentional. Missing/invalid JSON fails closed, and a
     # configured label set must include self-hosted + review-repair.
+    if: ${{ vars.REVIEW_REPAIR_ENABLED == 'true' }}
     runs-on: ${{ fromJSON(vars.REVIEW_REPAIR_RUNNER_LABELS) }}
     timeout-minutes: 45
     env:
       ACTOR_ALLOWLIST: 'sironekotoro'
-      REVIEW_REPAIR_ENABLED: 'true'
+      REVIEW_REPAIR_ENABLED: ${{ vars.REVIEW_REPAIR_ENABLED }}
       REVIEW_REPAIR_MAX: ${{ vars.REVIEW_REPAIR_MAX || '3' }}
       REVIEW_REPAIR_RUNNER_LABELS: ${{ vars.REVIEW_REPAIR_RUNNER_LABELS }}
     steps:
+      - name: Re-check review repair kill switch
+        id: feature_gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          value="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/variables/REVIEW_REPAIR_ENABLED" \
+            | jq -r '.value // empty')" || {
+              echo 'FAILURE_CATEGORY=REPAIR_DISABLED' >&2
+              echo 'REVIEW_REPAIR_ENABLED could not be read authoritatively' >&2
+              exit 1
+            }
+          [ "$value" = true ] || {
+            echo 'FAILURE_CATEGORY=REPAIR_DISABLED' >&2
+            echo 'review repair is disabled at executor start' >&2
+            exit 1
+          }
+          echo 'result=pass' >> "$GITHUB_OUTPUT"
+
       - name: Record executor start
         id: executor_clock
         shell: bash
@@ -213,16 +237,24 @@ jobs:
           EXECUTOR_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash dispatcher/scripts/mark-review-repair.sh
 
-      - name: Run repair agent on self-hosted executor
-        id: agent
+      - name: Build isolated review-repair images
+        id: agent_image
         if: steps.executor_marker.outputs.result == 'pass'
+        working-directory: dispatcher
+        run: |
+          docker build --tag "review-repair-agent:$GITHUB_RUN_ID" --file docker/review-repair-agent.Dockerfile .
+          docker build --tag "review-repair-egress:$GITHUB_RUN_ID" --file docker/review-repair-egress.Dockerfile .
+
+      - name: Run repair agent in isolated container
+        id: agent
+        if: steps.executor_marker.outputs.result == 'pass' && steps.agent_image.outcome == 'success'
         working-directory: target
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODEL: ${{ vars.REVIEW_REPAIR_MODEL || 'openrouter/deepseek/deepseek-v4-flash' }}
-          AGENT_AUTO_INSTALL: 'false'
-        run: bash ../dispatcher/scripts/run-agent.sh
+          AGENT_MAX_RUNTIME: '45'
+        run: bash ../dispatcher/scripts/run-review-repair-agent-container.sh
 
       - name: Test, commit, and push same existing PR branch
         id: commit
@@ -232,6 +264,7 @@ jobs:
           TASK_FILE: ${{ runner.temp }}/task.json
           PUSH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
           DISPATCH_MODE: ${{ steps.target.outputs.mode }}
+          REPAIR_TESTS_ALREADY_RAN: 'true'
         run: bash ../dispatcher/scripts/commit-review-repair.sh
 
       - name: Record executor finish
