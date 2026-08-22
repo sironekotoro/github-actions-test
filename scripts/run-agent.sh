@@ -10,9 +10,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
-TASK_FILE="${TASK_FILE:-$RUNNER_TEMP/task.json}"
-PROMPT_FILE="${PROMPT_FILE:-$RUNNER_TEMP/agent-prompt.txt}"
-AGENT_LOG="${AGENT_LOG:-$RUNNER_TEMP/agent.log}"
+runtime_temp="${RUNNER_TEMP:-/tmp}"
+TASK_FILE="${TASK_FILE:-$runtime_temp/task.json}"
+PROMPT_FILE="${PROMPT_FILE:-$runtime_temp/agent-prompt.txt}"
+AGENT_LOG="${AGENT_LOG:-$runtime_temp/agent.log}"
 
 # A trusted outer executor explicitly enables this mode for the isolated
 # review-repair container. A stale prompt file must never alter ordinary agent
