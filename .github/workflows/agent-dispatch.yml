@@ -226,6 +226,7 @@ jobs:
           OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
           DISPATCH_MODE: cross
           DISPATCHER_REPOSITORY: ${{ github.repository }}
+          DISPATCH_PRINCIPAL: ${{ steps.app_token.outputs.app-slug }}[bot]
         run: bash ../scripts/commit-push-pr.sh
 
       - name: Feedback and step summary

@@ -5,6 +5,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/repo.sh"
 
 TASK_FILE="${TASK_FILE:-$RUNNER_TEMP/task.json}"
 task_id="$(jq -r '.task_id' "$TASK_FILE")"
@@ -14,7 +15,7 @@ model="$(jq -r '.requested_model // ""' "$TASK_FILE")"
 [ -z "$model" ] && model="${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
 branch="$(git branch --show-current)"
 default_branch="${DEFAULT_BRANCH:-master}"
-repo="$(jq -r '.target_repository' "$TASK_FILE")"
+repo="$(canonicalize_repo "$(jq -r '.target_repository' "$TASK_FILE")")"
 dispatcher_repo="${DISPATCHER_REPOSITORY:-${GITHUB_REPOSITORY:-$repo}}"
 mode="${DISPATCH_MODE:-same}"
 run_url="${GITHUB_SERVER_URL:-https://github.com}/${dispatcher_repo}/actions/runs/${GITHUB_RUN_ID:-0}"
@@ -48,6 +49,32 @@ fi
 
 git config user.name  'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+# Persist the original task context in the bot-owned PR and bind it to the
+# initial agent commit with a SHA-256 trailer. Review repair will reject a PR
+# unless the PR author, metadata, target, branch, and commit trailer agree.
+writer_login="${DISPATCH_PRINCIPAL:-github-actions[bot]}"
+if [ -z "$writer_login" ]; then
+  if [ "$mode" = cross ]; then
+    fail_with "$CAT_TARGET_PR" "target-scoped token principal is missing"
+  else
+    fail_with "$CAT_PR" "workflow token principal is missing"
+  fi
+fi
+printf '%s' "$writer_login" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9-]*\[bot\]$' \
+  || fail_with "$CAT_PR" "dispatcher principal must be a GitHub bot login"
+metadata_file="$RUNNER_TEMP/agent-task-metadata.json"
+jq -cS \
+  --arg dispatcher_repository "$(canonicalize_repo "$dispatcher_repo")" \
+  --arg writer_login "$writer_login" \
+  '{schema:"agent-dispatch-task/v1", task_id, target_repository, source,
+    title, prompt, created_at, requested_model, max_runtime, dry_run,
+    dispatcher_repository:$dispatcher_repository, writer_login:$writer_login}' \
+  "$TASK_FILE" > "$metadata_file" \
+  || fail_with "$CAT_INVALID_PAYLOAD" "could not serialize agent task metadata"
+metadata_sha="$(sha256_of "$metadata_file")"
+metadata_b64="$(node -e 'const fs=require("fs"); process.stdout.write(fs.readFileSync(process.argv[1]).toString("base64"))' "$metadata_file")"
+
 git add -A
 if ! git diff --cached --check >"$RUNNER_TEMP/git-check.log" 2>&1; then
   tail -n 20 "$RUNNER_TEMP/git-check.log" >&2
@@ -55,7 +82,10 @@ if ! git diff --cached --check >"$RUNNER_TEMP/git-check.log" 2>&1; then
   exit 1
 fi
 
-git commit -m "AI: ${title}" >/dev/null 2>&1 || {
+git commit -m "AI: ${title}" \
+  -m "Agent-Task-Metadata-SHA256: $metadata_sha" \
+  -m "Agent-Task-ID: $task_id" \
+  -m "Agent-Target-Repository: $repo" >/dev/null 2>&1 || {
   [ "$mode" = cross ] && fail_with "$CAT_TARGET_PUSH" "git commit failed" || fail_with "$CAT_PUSH" "git commit failed"
 }
 commit_sha="$(git rev-parse HEAD)"
@@ -89,9 +119,12 @@ pr_body="$(printf '%s\n' \
   "| Model | \`$model\` |" \
   "| Branch | \`$branch\` |" \
   "| Dispatcher run | $run_url |" \
+  "| Dispatcher principal | \`$writer_login\` |" \
   "" \
   "- Tests: pass" \
-  "- \`git diff --check\`: pass")"
+  "- \`git diff --check\`: pass" \
+  "" \
+  "<!-- agent-dispatch-task:v1:$metadata_b64 -->")"
 
 if gh pr create --repo "$repo" --base "$default_branch" --head "$branch" \
   --title "AI: ${title}" --body "$pr_body" >"$RUNNER_TEMP/pr-create.log" 2>&1; then

@@ -145,3 +145,11 @@ Cross-repo specific categories:
 ## Rollback
 
 Set `CROSS_REPO_ENABLED=false` (or remove the variable). Same-repo dispatch continues to use the existing `GITHUB_TOKEN` path. No target-side workflows need to be removed.
+
+Review repair has an independent `REVIEW_REPAIR_ENABLED` gate. Its scheduled
+cross-repo scanner creates a separate App token for each allowlisted target job,
+validates/reserves one review, asynchronously dispatches the self-hosted
+executor, and exits. It never reuses the central `GITHUB_TOKEN` for target API
+calls or writes, and it never waits for agent completion. The executor creates a
+fresh token scoped to that same target after re-authorizing the request. See
+[REVIEW_REPAIR.md](REVIEW_REPAIR.md).

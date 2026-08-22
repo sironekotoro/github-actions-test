@@ -101,3 +101,73 @@ Agent作業後のtarget repo writeで失敗しました。
 - final agent prompt build
 
 Dry-run成功後にharmless docs-only E2Eを実施し、生成PRはmergeせず確認用に残す/closeします。
+
+## Review repair controls
+
+Review repairは通常dispatchとは独立しており、repository variable
+`REVIEW_REPAIR_ENABLED=true` のときだけ起動します。緊急停止/rollbackは
+このvariableを `false` にするか削除します。既存agent PR、通常Issue
+dispatch、cross-repo dispatchのfeature gateには影響しません。
+
+`REVIEW_REPAIR_MAX` は既定3（許容1..10）。上限到達時は
+`REPAIR_LIMIT_REACHED` とPRコメントを残し、agentを起動しません。上限を
+引き上げる前にPRのrepair markerと履歴を確認してください。
+
+executorにはrepository variable `REVIEW_REPAIR_RUNNER_LABELS`をJSON arrayで
+設定します。最低限 `["self-hosted","review-repair"]` が必要です。
+実runnerにもこれらのlabelを付与し、必要なOS/architecture labelを
+追加してください。未設定時はhosted runnerへfallbackせず
+`REPAIR_EXECUTOR_UNAVAILABLE` で停止します。
+
+executor開始時にも GitHub API で現在の `REVIEW_REPAIR_ENABLED` を再確認します。
+OFFまたは安全に確認できない場合は `REPAIR_DISABLED` で停止し、checkout、agent、
+target writeは行いません。
+`REVIEW_REPAIR_VARIABLES_TOKEN` にはdispatcher repositoryだけを対象にした
+fine-grained PATを設定し、Repository permissionsの **Variables: read** だけを
+付与してください（GitHubが必須とするMetadata: readは自動的に含まれます）。未設定・
+期限切れ・権限不足は安全な停止となります。このtokenをagent、target repository、
+Docker containerへ渡してはいけません。
+
+review-repair executor runnerにはDocker daemonとnon-root runner userのDocker利用権限が
+必要です。Dockerまたはtrusted image buildが使えない場合は、agentをhost上で実行せず
+`AGENT_START_FAILED`で停止します。agentとrepository testsは`.git`なしのtarget作業コピー
+だけをmountした使い捨てcontainerで実行され、host HOME、SSH、`gh`/Codex/OpenCode
+credentials、GitHub/App token、Docker socketはcontainerへ渡しません。agent networkは
+internalで、OpenRouter HTTPSだけを許可する別proxy経由で通信します。
+`OPENROUTER_API_KEY` はagent実行時だけcontainer内に存在し、repository test実行前に
+unsetされます。agent log/promptはhostのartifactやPR feedbackへ渡しません。
+
+## Review repair failure categories
+
+- `REPAIR_METADATA_INVALID`: PR内のtask metadata、review、ID、input sizeが不正。手動でbranchを再利用せず、dispatcher作成PRか確認する。
+- `REPAIR_PR_IDENTITY_MISMATCH`: target/base/head repo、dispatcher identity、PR bot principalのいずれかが不一致。forkや手作成PRは対象外。
+- `REPAIR_BRANCH_MISMATCH`: `agent/<task_id>`、base/default branch、review時head SHA、現在のremote SHAが不一致。新しいreviewが必要な場合がある。
+- `REPAIR_LIMIT_REACHED`: 既定3回のstart markerを消化。自動処理は停止済み。
+- `REPAIR_STATE_WRITE_FAILED`: agent起動前のreview ID markerを書けなかったため停止。App/GITHUB_TOKENのPull requests write権限を確認する。
+- `REPAIR_EXECUTOR_UNAVAILABLE`: runner label variableが未設定・不正。JSONとrunner labelsを確認する。
+- `REPAIR_EXECUTOR_DISPATCH_FAILED`: executor workflowがdefault branchに存在するか、Actions write権限、Actions制限を確認する。hosted dispatcherからexecutorの完了待ちはしない。
+- `REPAIR_EXECUTOR_REQUEST_INVALID`: target/PR/review/head SHA/attempt/refのdispatch inputが許容形式外。手動で書き換えず元reviewとdispatcher logを確認する。
+- `REPAIR_DISABLED`: executor開始時のauthoritativeなrepository variable確認でfeature flagがOFF、または安全に確認できなかった。agent・checkout・target writeは行われていない。
+
+`APP_TOKEN_FAILED`、`TARGET_CHECKOUT_FAILED`、`TARGET_PUSH_FAILED` は通常の
+cross-repo runbookと同じ確認手順を使います。review本文やsecret値をログへ
+貼らないでください。review本文はtrusted commandではありません。
+
+## Duplicate / interrupted review repair
+
+PRコメントの次のhidden markerが正本です。
+
+```text
+<!-- agent-review-repair:v1 status=started review_id=... attempt=... -->
+```
+
+`started` はagent起動前に記録されるため、同じreview IDは失敗時も自動再投入
+されません。失敗原因を直した後はauthorized reviewerが新しい
+`CHANGES_REQUESTED` reviewを現在のhead SHAへ提出してください。コメントを
+削除して強制再実行する運用は推奨しません。
+
+`dispatched` 後にexecutorがqueuedのままなら、Actions画面で
+`Agent Review Repair Executor`とself-hosted runnerのonline/busy、label一致を確認します。
+dispatcherは意図的にexecutor完了を待たないため、dispatcher成功はrepair成功を
+意味しません。`executor-started` と最終 `completed` / `failed`
+marker、executor run URL、agent runtimeを確認してください。
