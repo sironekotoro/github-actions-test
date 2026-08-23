@@ -29,6 +29,7 @@ t "self-hosted mode has a separate job using configured labels" "yes" "$(grep -q
 t "self-hosted mode is explicit opt-in" "yes" "$(grep -q "needs.route.outputs.runner_mode == 'self-hosted'" "$WORKFLOW" && grep -q "needs.route.outputs.runner_mode == 'github'" "$WORKFLOW" && echo yes || echo no)"
 t "self-hosted agent and tests use isolated container" "yes" "$(grep -q 'run-agent-dispatch-container.sh' "$ACTION" && grep -q 'unset OPENROUTER_API_KEY' "$CONTAINER" && grep -q -- '--read-only' "$CONTAINER" && grep -q -- '--cap-drop=ALL' "$CONTAINER" && grep -q -- '--network "\$private_network"' "$CONTAINER" && echo yes || echo no)"
 t "outer commit does not rerun isolated tests" "yes" "$(grep -q 'AGENT_TESTS_ALREADY_RAN' "$ACTION" && grep -q 'AGENT_TESTS_ALREADY_RAN' "$ROOT/scripts/commit-push-pr.sh" && echo yes || echo no)"
+t "self-hosted path preserves cross-repo feature flag input" "yes" "$(grep -q 'cross_repo_enabled:' "$ACTION" && grep -q 'cross_repo_enabled: \${{ vars.CROSS_REPO_ENABLED' "$WORKFLOW" && echo yes || echo no)"
 t "review-repair feature gate remains outside ordinary workflow" "yes" "$(grep -q 'REVIEW_REPAIR_ENABLED' "$ROOT/.github/workflows/review-repair-executor.yml" && ! grep -q 'REVIEW_REPAIR_ENABLED:' "$WORKFLOW" && echo yes || echo no)"
 
 finish

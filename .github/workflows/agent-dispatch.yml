@@ -298,6 +298,7 @@ jobs:
         with:
           execution_mode: self-hosted
           github_token: ${{ github.token }}
+          cross_repo_enabled: ${{ vars.CROSS_REPO_ENABLED || 'false' }}
           app_id: ${{ secrets.GH_APP_ID }}
           app_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}

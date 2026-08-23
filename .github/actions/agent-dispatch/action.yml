@@ -7,6 +7,9 @@ inputs:
   github_token:
     description: Dispatcher repository workflow token
     required: true
+  cross_repo_enabled:
+    description: Existing cross-repository feature flag value
+    required: true
   app_id:
     description: GitHub App id for cross-repository dispatch
     required: false
@@ -53,7 +56,7 @@ runs:
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
         DISPATCHER_REPOSITORY: ${{ github.repository }}
-        CROSS_REPO_ENABLED: ${{ vars.CROSS_REPO_ENABLED || 'false' }}
+        CROSS_REPO_ENABLED: ${{ inputs.cross_repo_enabled }}
       run: bash scripts/authorize-target.sh
 
     - name: Same-repo identity guard
