@@ -101,6 +101,7 @@ function main() {
       `title=${payload.title}`,
       `source=${payload.source}`,
       `requested_model=${payload.requested_model}`,
+      `max_runtime=${payload.max_runtime}`,
       `dry_run=${payload.dry_run}`,
       `runner_mode=${payload.runner_mode}`,
     ];

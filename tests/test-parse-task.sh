@@ -74,6 +74,13 @@ t "T9e2 omitted runner mode defaults to github" "0|github" "$code|$(jq -r '.runn
 
 tmp="$(make_temp)"
 ( RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out.txt" \
+    DISPATCH_INPUTS='{"task_id":"d-override","target_repository":"sironekotoro/github-actions-test","title":"d","prompt":"x","requested_model":"openrouter/example/model","max_runtime":"17"}' \
+    node "$PARSE" >"$tmp/stdout.log" 2>"$tmp/stderr.log" )
+code=$?
+t "T9e2a task model and runtime are preserved" "0|openrouter/example/model|17|17" "$code|$(jq -r '.requested_model' "$tmp/task.json")|$(jq -r '.max_runtime' "$tmp/task.json")|$(awk -F= '$1 == "max_runtime" {print $2}' "$tmp/out.txt")"
+
+tmp="$(make_temp)"
+( RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out.txt" \
     DISPATCH_INPUTS='{"task_id":"d-invalid-runner","target_repository":"sironekotoro/github-actions-test","title":"d","prompt":"x","runner_mode":"unknown"}' \
     node "$PARSE" >"$tmp/stdout.log" 2>"$tmp/stderr.log" )
 code=$?

@@ -230,8 +230,10 @@ runs:
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
-        OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
-        AGENT_MAX_RUNTIME: '30'
+        # Keep ordinary task semantics: task JSON wins over the workflow model
+        # input, and an omitted max_runtime uses run-agent.sh's 10 minute default.
+        OPENROUTER_MODEL: ${{ steps.parse.outputs.requested_model || inputs.openrouter_model }}
+        AGENT_MAX_RUNTIME: ${{ steps.parse.outputs.max_runtime || '10' }}
       run: bash ../scripts/run-agent-dispatch-container.sh
 
     - name: Run cross-repo coding agent in isolated container
@@ -242,8 +244,8 @@ runs:
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
-        OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
-        AGENT_MAX_RUNTIME: '30'
+        OPENROUTER_MODEL: ${{ steps.parse.outputs.requested_model || inputs.openrouter_model }}
+        AGENT_MAX_RUNTIME: ${{ steps.parse.outputs.max_runtime || '10' }}
       run: bash ../scripts/run-agent-dispatch-container.sh
 
     - name: Commit, push, and create same-repo PR
@@ -308,3 +310,12 @@ runs:
         if [ -d "$target_dir" ] || [ -L "$target_dir" ]; then
           rm -rf -- "$target_dir"
         fi
+
+    - name: Remove per-run isolated images
+      if: always() && inputs.execution_mode == 'self-hosted'
+      shell: bash
+      run: |
+        # The tags are deterministically scoped to this workflow run. Ignore a
+        # missing image so this cleanup also covers partial image-build failures.
+        docker image rm -f "agent-dispatch-agent:$GITHUB_RUN_ID" >/dev/null 2>&1 || true
+        docker image rm -f "agent-dispatch-egress:$GITHUB_RUN_ID" >/dev/null 2>&1 || true
