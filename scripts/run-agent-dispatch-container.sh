@@ -125,8 +125,15 @@ agent_runtime_seconds=$((agent_finished_epoch - agent_started_epoch))
 
 echo "runtime_seconds=$agent_runtime_seconds" >> "${GITHUB_OUTPUT:-/dev/null}"
 [ "$container_status" -eq 0 ] || exit "$container_status"
-[ ! -e "$workspace_dir/.git" ] \
-  || fail_with "$CAT_AGENT_START" "isolated agent created forbidden .git entry"
+
+# Some coding runtimes initialize a local repository for their own tooling.
+# It is entirely inside the disposable workspace, and must never influence the
+# trusted outer Git state, hooks, or patch. Remove it before calculating the
+# filesystem-only patch; no agent-owned Git metadata can cross this boundary.
+if [ -e "$workspace_dir/.git" ]; then
+  rm -rf -- "$workspace_dir/.git" \
+    || fail_with "$CAT_AGENT_START" "could not discard isolated agent .git entry"
+fi
 
 patch_file="$agent_root/agent.patch"
 set +e
