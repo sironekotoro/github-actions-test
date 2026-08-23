@@ -296,3 +296,15 @@ runs:
         PR_URL: ${{ steps.commit_cross.outputs.pr_url || steps.commit_same.outputs.pr_url }}
         PR_NUMBER: ${{ steps.commit_cross.outputs.pr_number || steps.commit_same.outputs.pr_number }}
       run: bash scripts/post-feedback.sh
+
+    - name: Remove separate target checkout
+      if: always()
+      shell: bash
+      run: |
+        # This checkout holds the outer executor's short-lived Git credential.
+        # It is separate from the runner's normal dispatcher worktree and must
+        # not persist under _work after a self-hosted dispatch.
+        target_dir="$GITHUB_WORKSPACE/target"
+        if [ -d "$target_dir" ] || [ -L "$target_dir" ]; then
+          rm -rf -- "$target_dir"
+        fi
