@@ -128,4 +128,4 @@ CI (`.github/workflows/ci.yml`) が push / PR で実行される。
 
 ## インシデント時
 
-`REPOSITORY_IDENTITY_MISMATCH` やその他 failure category が出た場合は [docs/RUNBOOK.md](docs/RUNBOOK.md) を参照。
+<!-- self-hosted-final-validation-20260823b -->
