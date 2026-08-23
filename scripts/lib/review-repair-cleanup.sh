@@ -5,7 +5,7 @@ set -uo pipefail
 cleanup_review_repair_staging() { # <staging-root> <runner-temp>
   local staging_root="$1" runner_temp="$2"
   case "$staging_root" in
-    "$runner_temp"/review-repair-agent.*)
+    "$runner_temp"/review-repair-agent.*|"$runner_temp"/agent-dispatch-agent.*)
       [ -d "$staging_root" ] || return 0
       rm -rf -- "$staging_root"
       ;;

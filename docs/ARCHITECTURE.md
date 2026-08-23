@@ -7,7 +7,9 @@ ChatGPT / ユーザー
   ↓  Issue 作成 + label ("opencode-run" / "agent:ready")  or  workflow_dispatch inputs
 GitHub Issue / dispatch
   ↓
-agent-dispatch.yml (ubuntu-latest, GitHub-hosted)
+agent-dispatch.yml route job (ubuntu-latest, GitHub-hosted)
+  ↓ runner_mode omitted/github -> Agent Dispatch (GitHub-hosted, ubuntu-latest)
+  ↓ runner_mode=self-hosted -> Agent Dispatch (self-hosted Mac, explicit opt-in)
   ↓
 authorize-actor.sh        actor allowlist チェック
   ↓
@@ -27,6 +29,13 @@ commit-push-pr.sh         npm test → commit → push → PR (metadata 付き)
   ↓
 post-feedback.sh          Issue コメント + Step summary
 ```
+
+`runner_mode` は task metadata の `github`（既定）または `self-hosted`。route job
+が unknown value を fail-closed で拒否してから別々の job を選択するため、通常経路の
+`ubuntu-latest` は動的に self-hosted へ変化しない。self-hosted job は既存の
+`REVIEW_REPAIR_RUNNER_LABELS` JSON をそのまま使う（現状は専用 Mac）。OpenCode と
+untrusted repository tests は review-repair と同じ隔離 container で実行し、外側だけが
+validated patch を import して既存の commit/push/PR logic を実行する。
 
 ## Review repair flow
 
@@ -69,7 +78,7 @@ configuration stops dispatch. There is intentionally no hosted fallback.
 | trigger | 条件 | 備考 |
 |---------|------|------|
 | `issues: labeled` | label が `opencode-run` または `agent:ready` | Issue 作成だけでは実行しない（Phase 10） |
-| `workflow_dispatch` | inputs: target_repository / task_id / title / prompt | 手動投入 |
+| `workflow_dispatch` | inputs: target_repository / task_id / title / prompt / runner_mode | 手動投入。runner_mode は既定 github |
 | `pull_request_review: submitted` | same-repo + `CHANGES_REQUESTED` | review repair; feature-gated |
 | `schedule` / review workflow dispatch | allowlisted cross-repo PR scan | review repair; feature-gated |
 

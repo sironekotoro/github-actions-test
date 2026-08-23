@@ -58,6 +58,28 @@ tmp="$(make_temp)"
 code=$?
 t "T9e dispatch inputs accepted" "0" "$code"
 
+tmp="$(make_temp)"
+( RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out.txt" \
+    DISPATCH_INPUTS='{"task_id":"d-runner","target_repository":"sironekotoro/github-actions-test","title":"d","prompt":"x","runner_mode":"self-hosted"}' \
+    node "$PARSE" >"$tmp/stdout.log" 2>"$tmp/stderr.log" )
+code=$?
+t "T9e1 explicit self-hosted runner mode accepted" "0|self-hosted" "$code|$(jq -r '.runner_mode' "$tmp/task.json")"
+
+tmp="$(make_temp)"
+( RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out.txt" \
+    DISPATCH_INPUTS='{"task_id":"d-default","target_repository":"sironekotoro/github-actions-test","title":"d","prompt":"x"}' \
+    node "$PARSE" >"$tmp/stdout.log" 2>"$tmp/stderr.log" )
+code=$?
+t "T9e2 omitted runner mode defaults to github" "0|github" "$code|$(jq -r '.runner_mode' "$tmp/task.json")"
+
+tmp="$(make_temp)"
+( RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out.txt" \
+    DISPATCH_INPUTS='{"task_id":"d-invalid-runner","target_repository":"sironekotoro/github-actions-test","title":"d","prompt":"x","runner_mode":"unknown"}' \
+    node "$PARSE" >"$tmp/stdout.log" 2>"$tmp/stderr.log" )
+code=$?
+err=""; [ -f "$tmp/stderr.log" ] && err="$(cut -d: -f1 < "$tmp/stderr.log")"
+t "T9e3 unknown runner mode fails closed" "1|INVALID_PAYLOAD" "$code|$err"
+
 # malformed dispatch inputs
 tmp="$(make_temp)"
 ( RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out.txt" DISPATCH_INPUTS='{not json' \

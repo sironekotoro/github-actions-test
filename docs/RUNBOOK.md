@@ -2,6 +2,18 @@
 
 Agent Dispatch は、異常時に agent を起動するより **fail-safe 停止**を優先します。Issue/Actions summary の failure category を起点に確認してください。
 
+## Agent Dispatch の runner 選択
+
+通常の Agent Dispatch は `runner_mode` 未指定／`github` のとき従来どおり
+GitHub-hosted `ubuntu-latest` で実行される。`self-hosted` は明示指定した task だけが
+既存 `REVIEW_REPAIR_RUNNER_LABELS` の Mac runner を選ぶ実験経路である。未知の値は
+`INVALID_PAYLOAD`、label variable が欠落・不正なら `AGENT_EXECUTOR_UNAVAILABLE` で停止し、
+hosted runner へ fallback しない。
+
+self-hosted 経路には、review-repair と同様に Docker daemon と non-root runner user の
+利用権限が必要。agent と repository tests は Docker container 内でのみ実行され、host
+HOME、SSH、他 repository、GitHub/App credential、Docker socket は container に渡さない。
+
 ## `REPOSITORY_IDENTITY_MISMATCH`
 
 意味: task の `target_repository` と、dispatcher checkout または cross-repo target checkout の `git remote` が一致しません。

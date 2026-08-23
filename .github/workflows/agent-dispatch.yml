@@ -21,6 +21,12 @@ on:
         description: 'OpenRouter model override'
         required: false
         default: ''
+      runner_mode:
+        description: 'Execution runner: github (default) or self-hosted (explicit opt-in)'
+        required: false
+        type: choice
+        options: [github, self-hosted]
+        default: github
       dry_run:
         description: 'Validate auth/checkout/identity/default branch/prompt without running the agent or mutating the target'
         required: false
@@ -37,10 +43,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  agent:
+  route:
+    # Parse only. An invalid runner_mode fails before an agent job is selected.
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(fromJSON('["opencode-run","agent:ready"]'), github.event.label.name) }}
+    outputs:
+      runner_mode: ${{ steps.parse.outputs.runner_mode }}
+    steps:
+      - name: Checkout dispatcher repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Parse task and select runner mode
+        id: parse
+        env:
+          EVENT_PATH: ${{ github.event_path }}
+          DISPATCH_INPUTS: ${{ github.event_name == 'workflow_dispatch' && toJson(inputs) || '' }}
+        run: node scripts/parse-task.mjs
+
+      - name: Validate explicit self-hosted runner configuration
+        if: steps.parse.outputs.runner_mode == 'self-hosted'
+        env:
+          # Reuse the only configured Mac runner label set. This workflow never
+          # changes REVIEW_REPAIR_ENABLED or the review-repair workflow itself.
+          AGENT_DISPATCH_RUNNER_LABELS: ${{ vars.REVIEW_REPAIR_RUNNER_LABELS }}
+        run: bash scripts/check-agent-dispatch-runner.sh
+
+  agent_github:
+    name: Agent Dispatch (GitHub-hosted)
+    needs: route
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ github.event_name == 'workflow_dispatch' || contains(fromJSON('["opencode-run","agent:ready"]'), github.event.label.name) }}
+    if: needs.route.result == 'success' && needs.route.outputs.runner_mode == 'github'
     env:
       ACTOR_ALLOWLIST: 'sironekotoro'
       CROSS_REPO_ENABLED: ${{ vars.CROSS_REPO_ENABLED || 'false' }}
@@ -239,3 +275,30 @@ jobs:
           PR_URL: ${{ steps.commit_cross.outputs.pr_url || steps.commit_same.outputs.pr_url }}
           PR_NUMBER: ${{ steps.commit_cross.outputs.pr_number || steps.commit_same.outputs.pr_number }}
         run: bash scripts/post-feedback.sh
+
+  agent_self_hosted:
+    name: Agent Dispatch (self-hosted experiment)
+    needs: route
+    if: needs.route.result == 'success' && needs.route.outputs.runner_mode == 'self-hosted'
+    # Existing repository variable; it currently resolves only to the online
+    # Mac runner labelled self-hosted + review-repair + macOS + ARM64.
+    runs-on: ${{ fromJSON(vars.REVIEW_REPAIR_RUNNER_LABELS) }}
+    timeout-minutes: 45
+    env:
+      ACTOR_ALLOWLIST: 'sironekotoro'
+    steps:
+      - name: Checkout dispatcher repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Run authenticated Agent Dispatch in isolated container
+        uses: ./.github/actions/agent-dispatch
+        with:
+          execution_mode: self-hosted
+          github_token: ${{ github.token }}
+          app_id: ${{ secrets.GH_APP_ID }}
+          app_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          openrouter_model: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
