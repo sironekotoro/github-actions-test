@@ -68,6 +68,29 @@ runs:
         GITHUB_REPOSITORY: ${{ github.repository }}
       run: bash scripts/guard-repo.sh
 
+    # Keep trusted dispatcher control code on the workflow ref. Unlike the
+    # GitHub-hosted legacy path, self-hosted execution must not switch that
+    # checkout to the target's default branch before it invokes local scripts.
+    - name: Checkout same-repo target separately
+      id: same_target_checkout
+      if: steps.target.outputs.mode == 'same' && steps.same_guard.outputs.result == 'pass'
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ steps.target.outputs.target_repository }}
+        token: ${{ inputs.github_token }}
+        fetch-depth: 0
+        path: target
+        persist-credentials: true
+
+    - name: Re-verify same-repo target checkout identity
+      id: same_target_guard
+      if: steps.same_target_checkout.outcome == 'success'
+      working-directory: target
+      shell: bash
+      env:
+        TASK_FILE: ${{ runner.temp }}/task.json
+      run: bash ../scripts/guard-target-repo.sh
+
     - name: Check cross-repo GitHub App configuration
       id: cross_auth
       if: steps.target.outputs.mode == 'cross'
@@ -127,12 +150,13 @@ runs:
 
     - name: Same-repo dry-run inspection
       id: dry_same
-      if: steps.target.outputs.mode == 'same' && steps.same_guard.outputs.result == 'pass' && steps.parse.outputs.dry_run == 'true'
+      if: steps.target.outputs.mode == 'same' && steps.same_target_guard.outputs.result == 'pass' && steps.parse.outputs.dry_run == 'true'
+      working-directory: target
       shell: bash
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
         GH_TOKEN: ${{ inputs.github_token }}
-      run: bash scripts/inspect-target.sh
+      run: bash ../scripts/inspect-target.sh
 
     - name: Cross-repo dry-run inspection
       id: dry_cross
@@ -146,13 +170,14 @@ runs:
 
     - name: Prepare same-repo agent branch
       id: prep_same
-      if: steps.target.outputs.mode == 'same' && steps.same_guard.outputs.result == 'pass' && steps.parse.outputs.dry_run != 'true'
+      if: steps.target.outputs.mode == 'same' && steps.same_target_guard.outputs.result == 'pass' && steps.parse.outputs.dry_run != 'true'
+      working-directory: target
       shell: bash
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
         GH_TOKEN: ${{ inputs.github_token }}
         DISPATCH_MODE: same
-      run: bash scripts/prepare-branch.sh
+      run: bash ../scripts/prepare-branch.sh
 
     - name: Prepare cross-repo agent branch
       id: prep_cross
@@ -176,13 +201,14 @@ runs:
     - name: Run same-repo coding agent on GitHub-hosted runner
       id: agent_same_hosted
       if: inputs.execution_mode == 'github' && steps.prep_same.outputs.result == 'pass'
+      working-directory: target
       shell: bash
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
         OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
         GH_TOKEN: ${{ inputs.github_token }}
-      run: bash scripts/run-agent.sh
+      run: bash ../scripts/run-agent.sh
 
     - name: Run cross-repo coding agent on GitHub-hosted runner
       id: agent_cross_hosted
@@ -199,13 +225,14 @@ runs:
     - name: Run same-repo coding agent in isolated container
       id: agent_same_isolated
       if: inputs.execution_mode == 'self-hosted' && steps.isolated_images.outcome == 'success' && steps.prep_same.outputs.result == 'pass'
+      working-directory: target
       shell: bash
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
         OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
         AGENT_MAX_RUNTIME: '30'
-      run: bash scripts/run-agent-dispatch-container.sh
+      run: bash ../scripts/run-agent-dispatch-container.sh
 
     - name: Run cross-repo coding agent in isolated container
       id: agent_cross_isolated
@@ -222,6 +249,7 @@ runs:
     - name: Commit, push, and create same-repo PR
       id: commit_same
       if: steps.agent_same_hosted.outputs.result == 'pass' || steps.agent_same_isolated.outputs.result == 'pass'
+      working-directory: target
       shell: bash
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
@@ -236,7 +264,7 @@ runs:
         GIT_CONFIG_COUNT: ${{ inputs.execution_mode == 'self-hosted' && '1' || '0' }}
         GIT_CONFIG_KEY_0: core.hooksPath
         GIT_CONFIG_VALUE_0: /dev/null
-      run: bash scripts/commit-push-pr.sh
+      run: bash ../scripts/commit-push-pr.sh
 
     - name: Commit, push, and create cross-repo PR
       id: commit_cross
