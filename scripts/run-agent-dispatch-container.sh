@@ -103,6 +103,7 @@ docker run --rm --init \
   --env OPENCODE_DISABLE_AUTOUPDATE=true \
   --env AGENT_USE_PREBUILT_PROMPT=true \
   --env PROMPT_FILE=/runtime/agent-prompt.txt \
+  --env RUNNER_TEMP=/tmp \
   --env AGENT_LOG=/tmp/agent.log \
   --env GITHUB_OUTPUT=/tmp/agent-output \
   --env AGENT_MAX_RUNTIME="${AGENT_MAX_RUNTIME:-30}" \
