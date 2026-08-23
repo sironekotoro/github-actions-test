@@ -67,7 +67,9 @@ Issue に `opencode-run` または `agent:ready` ラベルを付けると実行�
 
 ## workflow_dispatch
 
-Actions -> **Agent Dispatch** -> **Run workflow** から `target_repository` / `task_id` / `title` / `prompt` / `dry_run` を指定する。
+Actions -> **Agent Dispatch** -> **Run workflow** から `target_repository` / `task_id` / `title` / `prompt` / `dry_run` を指定する。`runner_mode` は未指定または `github` なら従来どおり GitHub-hosted `ubuntu-latest` を使う。`self-hosted` は明示 opt-in の実験経路で、現在は `REVIEW_REPAIR_RUNNER_LABELS` に設定された Mac runner のみを選択する。
+
+`runner_mode` は Issue の task JSON にも指定できる。受理値は `github` と `self-hosted` のみで、未知の値は agent を開始せず `INVALID_PAYLOAD` で停止する。self-hosted 経路では OpenCode と repository test を Docker の使い捨て・non-root・read-only container に閉じ込め、agent へは .git、host HOME、SSH、GitHub/App token、Docker socket を渡さない。commit / push / PR 作成だけは既存どおり trusted outer executor が行う。
 
 Cross-repoを初めて試す場合は `dry_run=true` を推奨する。dry-runでは auth / checkout / identity / default branch / prompt build まで検証し、agent / branch / commit / push / PR は実行しない。
 

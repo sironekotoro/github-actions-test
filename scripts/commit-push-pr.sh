@@ -27,7 +27,7 @@ if [ "$(jq -r '.dry_run // false' "$TASK_FILE")" = true ]; then
   exit 0
 fi
 
-if [ -f package.json ]; then
+if [ -f package.json ] && [ "${AGENT_TESTS_ALREADY_RAN:-false}" != "true" ]; then
   log_info "running repository tests"
   if ! npm test >"$RUNNER_TEMP/npm-test.log" 2>&1; then
     log_error "FAILURE_CATEGORY=$CAT_TEST repository tests failed"
@@ -36,6 +36,10 @@ if [ -f package.json ]; then
     exit 1
   fi
   summary "| tests | pass |"
+elif [ -f package.json ]; then
+  # Self-hosted dispatch runs untrusted repository tests inside its isolated
+  # container. Do not re-execute target code in the trusted outer executor.
+  summary "| tests | pass (isolated agent container) |"
 else
   summary "| tests | none (no package.json) |"
 fi

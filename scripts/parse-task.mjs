@@ -3,7 +3,7 @@
 //
 // Normalized payload:
 //   task_id, target_repository, source, title, prompt, created_at,
-//   requested_model, max_runtime, dry_run
+//   requested_model, max_runtime, dry_run, runner_mode
 
 import fs from "node:fs";
 import path from "node:path";
@@ -40,6 +40,13 @@ function normalizeBoolean(value) {
   die("dry_run must be true or false");
 }
 
+function normalizeRunnerMode(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return "github";
+  const mode = String(value).trim();
+  if (mode === "github" || mode === "self-hosted") return mode;
+  die("runner_mode must be github or self-hosted");
+}
+
 function normalize(raw, source) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) die("payload must be a JSON object");
   for (const field of REQUIRED) {
@@ -58,6 +65,7 @@ function normalize(raw, source) {
     requested_model: raw.requested_model ? String(raw.requested_model) : "",
     max_runtime: raw.max_runtime ? String(raw.max_runtime) : "",
     dry_run: normalizeBoolean(raw.dry_run),
+    runner_mode: normalizeRunnerMode(raw.runner_mode),
   };
 }
 
@@ -93,11 +101,13 @@ function main() {
       `title=${payload.title}`,
       `source=${payload.source}`,
       `requested_model=${payload.requested_model}`,
+      `max_runtime=${payload.max_runtime}`,
       `dry_run=${payload.dry_run}`,
+      `runner_mode=${payload.runner_mode}`,
     ];
     fs.appendFileSync(outFile, "\n" + lines.join("\n") + "\n");
   }
-  process.stdout.write(`task_id=${payload.task_id} target_repository=${payload.target_repository} source=${payload.source} dry_run=${payload.dry_run}\n`);
+  process.stdout.write(`task_id=${payload.task_id} target_repository=${payload.target_repository} source=${payload.source} dry_run=${payload.dry_run} runner_mode=${payload.runner_mode}\n`);
 }
 
 main();
