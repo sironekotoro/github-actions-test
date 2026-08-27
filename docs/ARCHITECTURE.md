@@ -25,7 +25,9 @@ prepare-branch.sh         dirty tree / strict duplicate 検査 → agent/<task_i
   ↓
 run-agent.sh              opencode run (OpenRouter, bounded runtime, bounded retry)
   ↓
-commit-push-pr.sh         npm test → commit → push → PR (metadata 付き)
+classify-workflow-push.sh actual post-agent diff + identity/branch/base validation
+  ↓
+commit-push-pr.sh         npm test → commit → normal/workflow token push → PR (metadata 付き)
   ↓
 post-feedback.sh          Issue コメント + Step summary
 ```
@@ -98,6 +100,47 @@ permissions:
 `OPENROUTER_API_KEY` は repo secret（sironekotoro/github-actions-test）に登録。
 `run-agent.sh` の環境変数としてのみ注入し、ログ・summary には出力しない（Phase 7 / 33）。
 
+### Workflow-file publication credential boundary
+
+GitHub rejects a contents-write `GITHUB_TOKEN` or GitHub App installation token
+when it tries to create or update `.github/workflows/**` without the App's
+separate **Workflows: write** repository permission. This is why a normal Agent
+Dispatch push cannot publish a workflow edit in the current configuration.
+
+For the isolated self-hosted same-repository path, the trusted outer executor
+uses `classify-workflow-push.sh` *after* the agent and its tests finish. It
+rechecks target/remote identity, `agent/<task_id>` branch, expected base branch,
+and every repository-relative diff path. It selects the push credential solely
+from the actual Git diff:
+
+| dispatch case | publication behavior |
+|---|---|
+| same repository, no `.github/workflows/**` diff | existing normal dispatch credential |
+| same repository, workflow diff | a short-lived GitHub App installation token with Contents, Pull requests, and Workflows all set to write |
+| cross repository, no workflow diff | existing target-scoped App token |
+| cross repository, workflow diff | rejected as `CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED` |
+
+The late workflow token is requested by `actions/create-github-app-token` only
+when the validated same-repository diff requires it. It exists only in the
+trusted commit/push step, temporarily replaces the checkout's Git HTTP header
+for `git push`, and is removed immediately afterwards. It is never passed to
+OpenCode, repository tests in the isolated container, Docker environment or
+mounts, task JSON, prompt text, artifacts, logs, or step summaries.
+
+The existing App must be installed on `sironekotoro/github-actions-test` with
+**Contents: write**, **Pull requests: write**, and **Workflows: write**. The
+workflow deliberately does not change App permissions itself. Until an operator
+grants that permission, a workflow diff fails before push with
+`WORKFLOW_PUSH_AUTH_NOT_CONFIGURED` and explains that agent execution succeeded
+but trusted workflow publication is not configured. No broad classic PAT is
+used, and the cross-repository App-token request remains unchanged (it does not
+ask for Workflows permission).
+
+`runner_mode=github` retains its normal same-repository and cross-repository
+paths for ordinary files. Workflow-file publication is intentionally fail-closed
+there because it lacks the isolated trusted outer-wrapper boundary; use explicit
+`runner_mode=self-hosted` for the supported self-modification path.
+
 ## Repository identity guard（中核）
 
 `scripts/guard-repo.sh` が以下を canonical 形式（`owner/name`、小文字、`.git` 除去）で比較:
@@ -168,6 +211,8 @@ the default bound.
 | `AGENT_TIMEOUT` | timeout 強制終了（exit 124） |
 | `TEST_FAILED` | npm test / diff --check 失敗 |
 | `PUSH_FAILED` / `PR_CREATE_FAILED` | push / PR 作成失敗 |
+| `WORKFLOW_PUSH_AUTH_NOT_CONFIGURED` | agent succeeded, but same-repo workflow publication lacks the required trusted App permission/token |
+| `CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED` | cross-repo diff changes `.github/workflows/**`; this capability is intentionally not enabled |
 | `REPAIR_METADATA_INVALID` | PR marker/task/review metadata malformed or outside input bounds |
 | `REPAIR_PR_IDENTITY_MISMATCH` | PR target/head/dispatcher/bot principal mismatch |
 | `REPAIR_BRANCH_MISMATCH` | head/base/default branch or reviewed SHA mismatch |

@@ -248,9 +248,59 @@ runs:
         AGENT_MAX_RUNTIME: ${{ steps.parse.outputs.max_runtime || '10' }}
       run: bash ../scripts/run-agent-dispatch-container.sh
 
-    - name: Commit, push, and create same-repo PR
-      id: commit_same
+    # Classify only after the agent has completed. This trusted dispatcher
+    # script examines the checked-out diff, not task/prompt content.
+    - name: Classify same-repo workflow publication
+      id: workflow_same
       if: steps.agent_same_hosted.outputs.result == 'pass' || steps.agent_same_isolated.outputs.result == 'pass'
+      working-directory: target
+      shell: bash
+      env:
+        TASK_FILE: ${{ runner.temp }}/task.json
+        DEFAULT_BRANCH: ${{ steps.prep_same.outputs.default_branch }}
+        DISPATCH_MODE: same
+        DISPATCHER_REPOSITORY: ${{ github.repository }}
+      run: bash ../scripts/classify-workflow-push.sh
+
+    - name: Classify cross-repo workflow publication
+      id: workflow_cross
+      if: steps.agent_cross_hosted.outputs.result == 'pass' || steps.agent_cross_isolated.outputs.result == 'pass'
+      working-directory: target
+      shell: bash
+      env:
+        TASK_FILE: ${{ runner.temp }}/task.json
+        DEFAULT_BRANCH: ${{ steps.prep_cross.outputs.default_branch }}
+        DISPATCH_MODE: cross
+        DISPATCHER_REPOSITORY: ${{ github.repository }}
+      run: bash ../scripts/classify-workflow-push.sh
+
+    # This token is intentionally created only after the actual validated diff
+    # requires it. The app must be installed on this dispatcher repository
+    # with Contents, Pull requests, and Workflows set to write.
+    - name: Create same-repo workflow publication token
+      id: workflow_push_token
+      if: steps.workflow_same.outputs.workflow_change == 'true'
+      continue-on-error: true
+      uses: actions/create-github-app-token@v3
+      with:
+        app-id: ${{ inputs.app_id }}
+        private-key: ${{ inputs.app_private_key }}
+        owner: ${{ steps.target.outputs.target_owner }}
+        repositories: ${{ steps.target.outputs.target_name }}
+        permission-contents: write
+        permission-pull-requests: write
+        permission-workflows: write
+
+    - name: Fail closed when workflow publication is not configured
+      if: steps.workflow_same.outputs.workflow_change == 'true' && steps.workflow_push_token.outcome != 'success'
+      shell: bash
+      run: |
+        source scripts/lib/common.sh
+        fail_with "$CAT_WORKFLOW_PUSH_AUTH_NOT_CONFIGURED" "agent execution succeeded, but workflow-file publication requires the configured GitHub App to have Contents, Pull requests, and Workflows write permission on this repository"
+
+    - name: Commit, push, and create same-repo ordinary PR
+      id: commit_same
+      if: (steps.agent_same_hosted.outputs.result == 'pass' || steps.agent_same_isolated.outputs.result == 'pass') && steps.workflow_same.outputs.workflow_change != 'true'
       working-directory: target
       shell: bash
       env:
@@ -268,9 +318,29 @@ runs:
         GIT_CONFIG_VALUE_0: /dev/null
       run: bash ../scripts/commit-push-pr.sh
 
+    - name: Commit, push, and create same-repo workflow PR
+      id: commit_same_workflow
+      if: steps.workflow_same.outputs.workflow_change == 'true' && steps.workflow_push_token.outcome == 'success'
+      working-directory: target
+      shell: bash
+      env:
+        TASK_FILE: ${{ runner.temp }}/task.json
+        GH_TOKEN: ${{ steps.workflow_push_token.outputs.token }}
+        DEFAULT_BRANCH: ${{ steps.prep_same.outputs.default_branch }}
+        OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
+        DISPATCH_MODE: same
+        DISPATCHER_REPOSITORY: ${{ github.repository }}
+        DISPATCH_PRINCIPAL: ${{ steps.workflow_push_token.outputs.app-slug }}[bot]
+        WORKFLOW_PUSH_MODE: workflow
+        AGENT_TESTS_ALREADY_RAN: ${{ inputs.execution_mode == 'self-hosted' && 'true' || 'false' }}
+        GIT_CONFIG_COUNT: ${{ inputs.execution_mode == 'self-hosted' && '1' || '0' }}
+        GIT_CONFIG_KEY_0: core.hooksPath
+        GIT_CONFIG_VALUE_0: /dev/null
+      run: bash ../scripts/commit-push-pr.sh
+
     - name: Commit, push, and create cross-repo PR
       id: commit_cross
-      if: steps.agent_cross_hosted.outputs.result == 'pass' || steps.agent_cross_isolated.outputs.result == 'pass'
+      if: (steps.agent_cross_hosted.outputs.result == 'pass' || steps.agent_cross_isolated.outputs.result == 'pass') && steps.workflow_cross.outputs.workflow_change != 'true'
       working-directory: target
       shell: bash
       env:
@@ -295,8 +365,8 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
         ISSUE_NUMBER: ${{ github.event.issue.number }}
         AGENT_BRANCH: ${{ steps.prep_cross.outputs.branch || steps.prep_same.outputs.branch }}
-        PR_URL: ${{ steps.commit_cross.outputs.pr_url || steps.commit_same.outputs.pr_url }}
-        PR_NUMBER: ${{ steps.commit_cross.outputs.pr_number || steps.commit_same.outputs.pr_number }}
+        PR_URL: ${{ steps.commit_cross.outputs.pr_url || steps.commit_same_workflow.outputs.pr_url || steps.commit_same.outputs.pr_url }}
+        PR_NUMBER: ${{ steps.commit_cross.outputs.pr_number || steps.commit_same_workflow.outputs.pr_number || steps.commit_same.outputs.pr_number }}
       run: bash scripts/post-feedback.sh
 
     - name: Remove separate target checkout

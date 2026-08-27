@@ -239,9 +239,39 @@ jobs:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: bash ../scripts/run-agent.sh
 
-      - name: Commit, push, and create same-repo PR
-        id: commit_same
+      # GitHub-hosted execution has no isolated trusted outer wrapper. Keep
+      # ordinary behavior unchanged, but do not materialize a workflow-write
+      # credential in that agent environment.
+      - name: Classify same-repo workflow publication
+        id: workflow_same
         if: steps.agent_same.outputs.result == 'pass'
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          DEFAULT_BRANCH: ${{ steps.prep_same.outputs.default_branch }}
+          DISPATCH_MODE: same
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/classify-workflow-push.sh
+
+      - name: Classify cross-repo workflow publication
+        id: workflow_cross
+        if: steps.agent_cross.outputs.result == 'pass'
+        working-directory: target
+        env:
+          TASK_FILE: ${{ runner.temp }}/task.json
+          DEFAULT_BRANCH: ${{ steps.prep_cross.outputs.default_branch }}
+          DISPATCH_MODE: cross
+          DISPATCHER_REPOSITORY: ${{ github.repository }}
+        run: bash ../scripts/classify-workflow-push.sh
+
+      - name: Fail closed for hosted workflow publication
+        if: steps.workflow_same.outputs.workflow_change == 'true'
+        run: |
+          source scripts/lib/common.sh
+          fail_with "$CAT_WORKFLOW_PUSH_AUTH_NOT_CONFIGURED" "agent execution succeeded, but workflow-file publication is available only through the isolated self-hosted trusted wrapper"
+
+      - name: Commit, push, and create same-repo ordinary PR
+        id: commit_same
+        if: steps.agent_same.outputs.result == 'pass' && steps.workflow_same.outputs.workflow_change != 'true'
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
           GH_TOKEN: ${{ github.token }}
@@ -253,7 +283,7 @@ jobs:
 
       - name: Commit, push, and create cross-repo PR
         id: commit_cross
-        if: steps.agent_cross.outputs.result == 'pass'
+        if: steps.agent_cross.outputs.result == 'pass' && steps.workflow_cross.outputs.workflow_change != 'true'
         working-directory: target
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
