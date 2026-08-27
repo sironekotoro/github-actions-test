@@ -42,6 +42,10 @@ CAT_TARGET_DEFAULT_BRANCH="TARGET_DEFAULT_BRANCH_NOT_FOUND"
 CAT_TARGET_PUSH="TARGET_PUSH_FAILED"
 CAT_TARGET_PR="TARGET_PR_CREATE_FAILED"
 
+# Workflow-file publication categories.
+CAT_WORKFLOW_PUSH_AUTH_NOT_CONFIGURED="WORKFLOW_PUSH_AUTH_NOT_CONFIGURED"
+CAT_CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED="CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED"
+
 # Review-repair categories. Ignored review states and duplicate events are
 # reported as non-failing decisions; these categories are reserved for a
 # fail-closed safety stop or an exhausted bound.
