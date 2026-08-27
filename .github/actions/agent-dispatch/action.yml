@@ -17,11 +17,21 @@ inputs:
     description: GitHub App private key for cross-repository dispatch
     required: false
   openrouter_api_key:
-    description: OpenRouter API key supplied only to the selected agent runtime
-    required: true
+    description: OpenRouter API key (for OpenCode agent)
+    required: false
   openrouter_model:
     description: Model override
     required: true
+  openai_api_key:
+    description: OpenAI API key (for Codex agent)
+    required: false
+  anthropic_api_key:
+    description: Anthropic API key (for Claude Code agent)
+    required: false
+  agent:
+    description: 'Coding agent: opencode (default), codex, or claude-code'
+    required: false
+    default: opencode
 runs:
   using: composite
   steps:
@@ -206,6 +216,8 @@ runs:
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
         OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
         GH_TOKEN: ${{ inputs.github_token }}
       run: bash ../scripts/run-agent.sh
@@ -218,6 +230,8 @@ runs:
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
         OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
         OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
         GH_TOKEN: ${{ steps.app_token.outputs.token }}
       run: bash ../scripts/run-agent.sh
@@ -229,9 +243,9 @@ runs:
       shell: bash
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
-        OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
-        # Keep ordinary task semantics: task JSON wins over the workflow model
-        # input, and an omitted max_runtime uses run-agent.sh's 10 minute default.
+        OPENROUTER_API_KEY: ${{ steps.parse.outputs.agent == 'opencode' && inputs.openrouter_api_key || '' }}
+        OPENAI_API_KEY: ${{ steps.parse.outputs.agent == 'codex' && inputs.openai_api_key || '' }}
+        ANTHROPIC_API_KEY: ${{ steps.parse.outputs.agent == 'claude-code' && inputs.anthropic_api_key || '' }}
         OPENROUTER_MODEL: ${{ steps.parse.outputs.requested_model || inputs.openrouter_model }}
         AGENT_MAX_RUNTIME: ${{ steps.parse.outputs.max_runtime || '10' }}
       run: bash ../scripts/run-agent-dispatch-container.sh
@@ -243,7 +257,9 @@ runs:
       shell: bash
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
-        OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+        OPENROUTER_API_KEY: ${{ steps.parse.outputs.agent == 'opencode' && inputs.openrouter_api_key || '' }}
+        OPENAI_API_KEY: ${{ steps.parse.outputs.agent == 'codex' && inputs.openai_api_key || '' }}
+        ANTHROPIC_API_KEY: ${{ steps.parse.outputs.agent == 'claude-code' && inputs.anthropic_api_key || '' }}
         OPENROUTER_MODEL: ${{ steps.parse.outputs.requested_model || inputs.openrouter_model }}
         AGENT_MAX_RUNTIME: ${{ steps.parse.outputs.max_runtime || '10' }}
       run: bash ../scripts/run-agent-dispatch-container.sh

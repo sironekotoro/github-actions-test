@@ -8,9 +8,10 @@ RUN apt-get update \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
-COPY scripts/run-agent.sh scripts/build-agent-prompt.sh scripts/build-review-prompt.sh /opt/review-repair-runner/
-COPY scripts/lib/common.sh /opt/review-repair-runner/lib/common.sh
-RUN chmod 555 /opt/review-repair-runner/*.sh /opt/review-repair-runner/lib/common.sh
+COPY scripts/run-agent.sh scripts/build-agent-prompt.sh scripts/build-review-prompt.sh scripts/agent-dispatcher.sh /opt/review-repair-runner/
+COPY scripts/agents/ /opt/review-repair-runner/agents/
+COPY scripts/lib/common.sh scripts/lib/credentials.sh /opt/review-repair-runner/lib/
+RUN chmod 555 /opt/review-repair-runner/*.sh /opt/review-repair-runner/agents/*.sh /opt/review-repair-runner/lib/*.sh
 RUN mkdir -p /runtime
 
 WORKDIR /workspace

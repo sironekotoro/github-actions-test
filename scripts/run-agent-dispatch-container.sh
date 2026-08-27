@@ -77,6 +77,19 @@ TASK_FILE="$task_file" PROMPT_FILE="$prompt_file" \
 chmod 700 "$agent_root" "$base_dir" "$workspace_dir" "$prompt_dir"
 chmod 400 "$prompt_file"
 
+# source credentials and resolve the selected agent's credential
+source "$SCRIPT_DIR/lib/credentials.sh"
+agent_credential=""
+agent="$(jq -r '.agent // "opencode"' "$task_file")"
+profile="$(resolve_credential_profile "$agent")"
+cred_var="$(profile_env_var "$profile")"
+if [ -n "$cred_var" ]; then
+  agent_credential="${!cred_var:-}"
+  credential_env="--env ${cred_var}=${agent_credential}"
+else
+  credential_env=""
+fi
+
 agent_started_epoch="$(date +%s)"
 set +e
 docker run --rm --init \
@@ -107,13 +120,15 @@ docker run --rm --init \
   --env AGENT_LOG=/tmp/agent.log \
   --env GITHUB_OUTPUT=/tmp/agent-output \
   --env AGENT_MAX_RUNTIME="${AGENT_MAX_RUNTIME:-30}" \
-  --env OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" \
   --env OPENROUTER_MODEL="${OPENROUTER_MODEL:-}" \
   --env AGENT_AUTO_INSTALL=false \
+  $credential_env \
   "$agent_image" bash -ceu '
     bash /opt/review-repair-runner/run-agent.sh
     # Repository tests are untrusted code and do not inherit the API key.
     unset OPENROUTER_API_KEY
+    unset OPENAI_API_KEY
+    unset ANTHROPIC_API_KEY
     if [ -f package.json ]; then
       npm test
     fi

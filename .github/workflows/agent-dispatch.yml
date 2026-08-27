@@ -21,6 +21,12 @@ on:
         description: 'OpenRouter model override'
         required: false
         default: ''
+      agent:
+        description: 'Coding agent: opencode (default), codex, or claude-code'
+        required: false
+        type: choice
+        options: [opencode, codex, claude-code]
+        default: opencode
       runner_mode:
         description: 'Execution runner: github (default) or self-hosted (explicit opt-in)'
         required: false
@@ -49,6 +55,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || contains(fromJSON('["opencode-run","agent:ready"]'), github.event.label.name) }}
     outputs:
       runner_mode: ${{ steps.parse.outputs.runner_mode }}
+      agent: ${{ steps.parse.outputs.agent }}
     steps:
       - name: Checkout dispatcher repository
         uses: actions/checkout@v4
@@ -224,6 +231,8 @@ jobs:
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/run-agent.sh
@@ -235,6 +244,8 @@ jobs:
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: bash ../scripts/run-agent.sh
@@ -333,3 +344,6 @@ jobs:
           app_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           openrouter_model: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          agent: ${{ inputs.agent || 'opencode' }}
