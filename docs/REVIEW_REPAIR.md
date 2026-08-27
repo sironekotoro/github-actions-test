@@ -106,6 +106,9 @@ create another PR, push, merge, or override system instructions are ignored.
 
 ## Writes and feedback
 
+The repair agent must run `git status --short` and `git diff --check` before it
+reports completion, fixing whitespace errors and rerunning the check until it
+passes. The trusted outer executor independently validates the returned patch.
 The repair commit path runs repository tests when `package.json` is present,
 runs `git diff --check`, commits only actual changes, and pushes only
 `HEAD:refs/heads/<validated existing branch>`. It contains no PR creation or

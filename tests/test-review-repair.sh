@@ -185,6 +185,11 @@ t "review prompt injection is not executed" "absent" "$([ -e /tmp/review-repair-
 rules_line="$(grep -n 'Do not create a branch' "$tmp/prompt" | cut -d: -f1)"
 feedback_line="$(grep -n '<UNTRUSTED_REVIEW_FEEDBACK' "$tmp/prompt" | cut -d: -f1)"
 t "authoritative rules precede untrusted review" "yes" "$([ "$rules_line" -lt "$feedback_line" ] && echo yes || echo no)"
+mandatory_line="$(grep -n 'MANDATORY FINAL VALIDATION' "$tmp/prompt" | cut -d: -f1)"
+t "review prompt requires git status --short" "yes" "$(grep -q 'git status --short' "$tmp/prompt" && echo yes || echo no)"
+t "review prompt requires git diff --check" "yes" "$(grep -q 'git diff --check' "$tmp/prompt" && echo yes || echo no)"
+t "review prompt requires whitespace repair" "yes" "$(grep -q 'Fix all whitespace errors' "$tmp/prompt" && grep -q 'rerun git diff --check until it exits successfully' "$tmp/prompt" && echo yes || echo no)"
+t "review mandatory validation follows untrusted review" "yes" "$([ -n "$mandatory_line" ] && [ "$feedback_line" -lt "$mandatory_line" ] && echo yes || echo no)"
 rm -f /tmp/review-repair-pwned
 
 # Resume an existing agent branch only when its head/base/hash all match.

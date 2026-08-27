@@ -146,9 +146,9 @@ set -e
 [ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ] \
   || fail_with "$CAT_AGENT_START" "could not create agent patch from isolated workspace"
 git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" \
-  || fail_with "$CAT_AGENT_START" "isolated agent patch failed validation"
+  || fail_with "$CAT_AGENT_PATCH_INVALID" "isolated agent patch failed validation"
 git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" \
-  || fail_with "$CAT_AGENT_START" "could not import isolated agent patch"
+  || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import isolated agent patch"
 
 summary "| agent isolation | Docker; non-root; read-only root; OpenRouter-only egress; no host credentials, .git, or Docker socket |"
 summary "| tests | pass (isolated agent container) |"

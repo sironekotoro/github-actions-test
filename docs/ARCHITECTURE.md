@@ -171,6 +171,14 @@ If an AGENTS.md file exists in this repository, read it first and follow it.
 
 手入力に依存しない（Phase 4 / 19 / 20）。
 
+Task/review text is delimited as untrusted data. The trusted prompt instructions
+also require the agent to run `git status --short` and `git diff --check` before
+reporting completion. Any whitespace error, including trailing whitespace
+introduced by the task, must be fixed and checked again until
+`git diff --check` exits successfully. The trusted outer executor independently
+runs `git apply --check --whitespace=error` and rejects invalid returned patches;
+it never sanitizes or rewrites them.
+
 ## Authorization
 
 - Issue 経由: Issue author **と** label を付けた sender の両方が `ACTOR_ALLOWLIST`（既定 `sironekotoro`）に含まれること。
@@ -207,6 +215,7 @@ the default bound.
 | `DIRTY_WORKING_TREE` | agent 開始時に作業ツリーが汚れている |
 | `CHECKOUT_FAILED` | branch 作成 / checkout 失敗 |
 | `AGENT_START_FAILED` | opencode 未導入・起動失敗 |
+| `AGENT_PATCH_INVALID` | agent 完了後に返された patch が trusted validation/import を通過しない |
 | `MODEL_API_FAILED` | opencode が非ゼロ終了（transient retry 消化後） |
 | `AGENT_TIMEOUT` | timeout 強制終了（exit 124） |
 | `TEST_FAILED` | npm test / diff --check 失敗 |
