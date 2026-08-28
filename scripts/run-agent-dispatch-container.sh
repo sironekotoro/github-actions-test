@@ -180,10 +180,20 @@ set +e
 ) > "$patch_file"
 diff_status=$?
 set -e
-[ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ] \
+if [ "$diff_status" -eq 0 ]; then
+  set_failure "$CAT_AGENT_PATCH_INVALID"
+  set_failure_reason "$CAT_REASON_NO_CHANGES"
+  fail_with "$CAT_AGENT_PATCH_INVALID" "agent produced no changes"
+fi
+[ "$diff_status" -eq 1 ] \
   || fail_with "$CAT_AGENT_START" "could not create agent patch from isolated workspace"
+[ -s "$patch_file" ] || {
+  set_failure "$CAT_AGENT_PATCH_INVALID"
+  set_failure_reason "$CAT_REASON_EMPTY_PATCH"
+  fail_with "$CAT_AGENT_PATCH_INVALID" "agent produced empty patch"
+}
 git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" \
-  || fail_with "$CAT_AGENT_PATCH_INVALID" "isolated agent patch failed validation"
+  || { set_failure_reason "$CAT_REASON_VALIDATION_FAILED"; fail_with "$CAT_AGENT_PATCH_INVALID" "isolated agent patch failed validation"; }
 git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" \
   || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import isolated agent patch"
 

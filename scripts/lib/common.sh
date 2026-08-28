@@ -9,10 +9,13 @@
 set -uo pipefail
 
 FAILURE_FILE="${RUNNER_TEMP:-/tmp}/failure_category"
+FAILURE_REASON_FILE="${RUNNER_TEMP:-/tmp}/failure_reason"
 SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-/tmp/agent_step_summary.md}"
 
 mkdir -p "$(dirname "$FAILURE_FILE")"
 [ -f "$FAILURE_FILE" ] || : > "$FAILURE_FILE"
+mkdir -p "$(dirname "$FAILURE_REASON_FILE")"
+[ -f "$FAILURE_REASON_FILE" ] || : > "$FAILURE_REASON_FILE"
 mkdir -p "$(dirname "$SUMMARY_FILE")"
 [ -f "$SUMMARY_FILE" ] || : > "$SUMMARY_FILE"
 
@@ -33,6 +36,12 @@ CAT_PR="PR_CREATE_FAILED"
 CAT_WORKFLOW_PUSH_AUTH_NOT_CONFIGURED="WORKFLOW_PUSH_AUTH_NOT_CONFIGURED"
 CAT_CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED="CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED"
 CAT_AGENT_EXECUTOR_UNAVAILABLE="AGENT_EXECUTOR_UNAVAILABLE"
+
+# --- failure reasons (machine readable, complement top-level category) ---
+CAT_REASON_NO_CHANGES="NO_CHANGES"
+CAT_REASON_EMPTY_PATCH="EMPTY_PATCH"
+CAT_REASON_PARSE_FAILED="PATCH_PARSE_FAILED"
+CAT_REASON_VALIDATION_FAILED="PATCH_VALIDATION_FAILED"
 
 # Agent type / credential profile categories.
 CAT_AGENT_UNKNOWN="AGENT_UNKNOWN"
@@ -68,6 +77,10 @@ log_error() { printf '[ERROR] %s\n' "$*" >&2; }
 
 set_failure() { printf '%s\n' "$1" > "$FAILURE_FILE"; }
 get_failure() { cat "$FAILURE_FILE" 2>/dev/null || echo UNKNOWN; }
+
+set_failure_reason() { printf '%s\n' "$1" > "$FAILURE_REASON_FILE"; }
+get_failure_reason() { cat "$FAILURE_REASON_FILE" 2>/dev/null || echo ""; }
+clear_failure_reason() { : > "$FAILURE_REASON_FILE"; }
 
 fail_with() {
   local category="$1"; shift

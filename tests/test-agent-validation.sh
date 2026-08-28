@@ -69,6 +69,8 @@ if [ "$command" = "run" ]; then
       valid)
         printf 'valid change\n' >> "$workspace_mount/file.txt"
         ;;
+      no_changes)
+        ;;
     esac
   fi
   exit 0
@@ -91,6 +93,7 @@ tmp="$(make_temp)"
 make_target "$tmp"
 run_container_case "$tmp" invalid
 t "invalid returned patch is rejected" "1|AGENT_PATCH_INVALID" "$(cat "$tmp/code")|$(cat "$tmp/failure_category")"
+t "invalid returned patch failure reason is PATCH_VALIDATION_FAILED" "PATCH_VALIDATION_FAILED" "$(cat "$tmp/failure_reason")"
 t "invalid returned patch is not imported" "base" "$(cat "$tmp/repo/file.txt")"
 
 # A clean patch still crosses the same trusted import boundary successfully.
@@ -99,6 +102,15 @@ make_target "$tmp"
 run_container_case "$tmp" valid
 t "valid returned patch imports" "0|" "$(cat "$tmp/code")|$(cat "$tmp/failure_category")"
 t "valid patch content is imported" "valid change" "$(tail -n 1 "$tmp/repo/file.txt")"
+
+# When the agent produces no changes, the top-level category is AGENT_PATCH_INVALID
+# with failure reason NO_CHANGES, not AGENT_START_FAILED.
+tmp="$(make_temp)"
+make_target "$tmp"
+run_container_case "$tmp" no_changes
+t "no_changes returns AGENT_PATCH_INVALID" "1|AGENT_PATCH_INVALID" "$(cat "$tmp/code")|$(cat "$tmp/failure_category")"
+t "no_changes failure reason is NO_CHANGES" "NO_CHANGES" "$(cat "$tmp/failure_reason")"
+t "no_changes does not modify target tree" "base" "$(cat "$tmp/repo/file.txt")"
 
 # Infrastructure failures before agent completion remain AGENT_START_FAILED.
 tmp="$(make_temp)"
