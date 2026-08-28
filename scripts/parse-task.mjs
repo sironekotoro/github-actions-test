@@ -19,19 +19,26 @@ function extractJson(body) {
   const text = String(body ?? "");
   const trimmed = text.trim();
   if (!trimmed) die("task body is empty");
+  // Top-level JSON parse attempt
   try {
     return JSON.parse(trimmed);
   } catch {
+    // Fenced JSON block parse attempt
     const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (fence) {
-      try { return JSON.parse(fence[1]); } catch {}
+      try { return JSON.parse(fence[1]); } catch {
+        die("fenced JSON parse failed");
+      }
     }
+    // Single-line JSON object attempt
     const line = trimmed.split("\n").find((l) => l.trim().startsWith("{"));
     if (line) {
-      try { return JSON.parse(line); } catch {}
+      try { return JSON.parse(line); } catch {
+        die("top-level JSON parse failed");
+      }
     }
   }
-  die("could not parse a JSON task payload from the body");
+  die("top-level JSON parse failed");
 }
 
 function normalizeBoolean(value) {

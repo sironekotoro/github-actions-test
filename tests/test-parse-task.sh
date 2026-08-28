@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Test 9: task payload parsing (malformed, fenced JSON, dispatch inputs)
+# Verifies that FAILURE_CATEGORY prefix (INVALID_PAYLOAD) is preserved while
+# the failure reason distinguishes top-level parse failure, fenced JSON parse
+# failure, and schema validation failure.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,13 +45,28 @@ outro"
 res="$(run_parse_issue "$tmp" "$body")"
 t "T9b fenced json block accepted" "0" "$(echo "$res" | cut -d'|' -f1)"
 
+# Malformed body: top-level and no fenced block -> top-level JSON parse failure
 tmp="$(make_temp)"
 res="$(run_parse_issue "$tmp" "this is not json at all")"
-t "T9c malformed body rejected" "1|INVALID_PAYLOAD" "$(echo "$res" | cut -d'|' -f1-2 | cut -d: -f1)"
+t "T9c malformed body rejected (prefix)" "1|INVALID_PAYLOAD" "$(echo "$res" | cut -d'|' -f1-2 | cut -d: -f1)"
+t "T9c malformed body rejected (detail)" "INVALID_PAYLOAD: top-level JSON parse failed" "$(echo "$res" | cut -d'|' -f2-)"
 
+# Missing required field -> schema validation failure
 tmp="$(make_temp)"
 res="$(run_parse_issue "$tmp" '{"task_id":"t1"}')"
-t "T9d missing required field rejected" "1|INVALID_PAYLOAD" "$(echo "$res" | cut -d'|' -f1-2 | cut -d: -f1)"
+t "T9d missing required field rejected (prefix)" "1|INVALID_PAYLOAD" "$(echo "$res" | cut -d'|' -f1-2 | cut -d: -f1)"
+t "T9d missing required field rejected (detail)" "INVALID_PAYLOAD: missing required field: target_repository" "$(echo "$res" | cut -d'|' -f2-)"
+
+# Fenced JSON with invalid content inside the fence -> fenced JSON parse failure
+tmp="$(make_temp)"
+body="some text
+\`\`\`json
+this is not valid json
+\`\`\`
+more text"
+res="$(run_parse_issue "$tmp" "$body")"
+t "T9g fenced invalid json rejected (prefix)" "1|INVALID_PAYLOAD" "$(echo "$res" | cut -d'|' -f1-2 | cut -d: -f1)"
+t "T9g fenced invalid json rejected (detail)" "INVALID_PAYLOAD: fenced JSON parse failed" "$(echo "$res" | cut -d'|' -f2-)"
 
 # dispatch inputs
 tmp="$(make_temp)"

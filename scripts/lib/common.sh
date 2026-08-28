@@ -9,10 +9,13 @@
 set -uo pipefail
 
 FAILURE_FILE="${RUNNER_TEMP:-/tmp}/failure_category"
+FAILURE_REASON_FILE="${RUNNER_TEMP:-/tmp}/failure_reason"
 SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-/tmp/agent_step_summary.md}"
 
 mkdir -p "$(dirname "$FAILURE_FILE")"
 [ -f "$FAILURE_FILE" ] || : > "$FAILURE_FILE"
+mkdir -p "$(dirname "$FAILURE_REASON_FILE")"
+[ -f "$FAILURE_REASON_FILE" ] || : > "$FAILURE_REASON_FILE"
 mkdir -p "$(dirname "$SUMMARY_FILE")"
 [ -f "$SUMMARY_FILE" ] || : > "$SUMMARY_FILE"
 
@@ -62,12 +65,27 @@ CAT_REPAIR_EXECUTOR_UNAVAILABLE="REPAIR_EXECUTOR_UNAVAILABLE"
 CAT_REPAIR_DISPATCH="REPAIR_EXECUTOR_DISPATCH_FAILED"
 CAT_REPAIR_REQUEST="REPAIR_EXECUTOR_REQUEST_INVALID"
 
+# Machine-readable sub-reasons for post-agent patch failures.
+# Consumers that read only FAILURE_CATEGORY continue to see AGENT_PATCH_INVALID.
+REASON_NO_CHANGES="NO_CHANGES"
+REASON_EMPTY_PATCH="EMPTY_PATCH"
+REASON_PATCH_PARSE_FAILED="PATCH_PARSE_FAILED"
+REASON_PATCH_VALIDATION_FAILED="PATCH_VALIDATION_FAILED"
+
+# Machine-readable sub-reasons for task parse failures.
+# INVALID_PAYLOAD remains the stable top-level category.
+REASON_TOPLEVEL_PARSE_FAILED="TOPLEVEL_PARSE_FAILED"
+REASON_FENCED_PARSE_FAILED="FENCED_PARSE_FAILED"
+REASON_SCHEMA_VALIDATION_FAILED="SCHEMA_VALIDATION_FAILED"
+
 log_info()  { printf '[INFO]  %s\n' "$*"; }
 log_warn()  { printf '[WARN]  %s\n' "$*" >&2; }
 log_error() { printf '[ERROR] %s\n' "$*" >&2; }
 
 set_failure() { printf '%s\n' "$1" > "$FAILURE_FILE"; }
+set_failure_reason() { printf '%s\n' "$1" > "$FAILURE_REASON_FILE"; }
 get_failure() { cat "$FAILURE_FILE" 2>/dev/null || echo UNKNOWN; }
+get_failure_reason() { cat "$FAILURE_REASON_FILE" 2>/dev/null || echo UNKNOWN; }
 
 fail_with() {
   local category="$1"; shift

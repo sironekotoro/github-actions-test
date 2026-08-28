@@ -182,8 +182,45 @@ diff_status=$?
 set -e
 [ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ] \
   || fail_with "$CAT_AGENT_START" "could not create agent patch from isolated workspace"
-git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" \
-  || fail_with "$CAT_AGENT_PATCH_INVALID" "isolated agent patch failed validation"
+
+patch_size=0
+[ -f "$patch_file" ] && patch_size=$(wc -c < "$patch_file")
+
+if [ "$diff_status" -eq 0 ]; then
+  set_failure "$CAT_AGENT_PATCH_INVALID"
+  if [ "$patch_size" -eq 0 ]; then
+    set_failure_reason "$REASON_NO_CHANGES"
+  else
+    set_failure_reason "$REASON_EMPTY_PATCH"
+  fi
+  log_error "FAILURE_CATEGORY=$CAT_AGENT_PATCH_INVALID FAILURE_REASON=$(get_failure_reason) agent produced no changes"
+  exit 1
+fi
+
+if [ "$patch_size" -eq 0 ]; then
+  set_failure "$CAT_AGENT_PATCH_INVALID"
+  set_failure_reason "$REASON_EMPTY_PATCH"
+  log_error "FAILURE_CATEGORY=$CAT_AGENT_PATCH_INVALID FAILURE_REASON=$REASON_EMPTY_PATCH agent patch is empty despite detected differences"
+  exit 1
+fi
+
+# First check if the patch is parseable (without --whitespace=error)
+if ! git -C "$target_dir" apply --check -p2 "$patch_file" >/dev/null 2>&1; then
+  set_failure "$CAT_AGENT_PATCH_INVALID"
+  set_failure_reason "$REASON_PATCH_PARSE_FAILED"
+  log_error "FAILURE_CATEGORY=$CAT_AGENT_PATCH_INVALID FAILURE_REASON=$REASON_PATCH_PARSE_FAILED isolated agent patch could not be parsed"
+  exit 1
+fi
+
+# Then validate whitespace with --whitespace=error
+if ! git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" >/dev/null 2>&1; then
+  set_failure "$CAT_AGENT_PATCH_INVALID"
+  set_failure_reason "$REASON_PATCH_VALIDATION_FAILED"
+  log_error "FAILURE_CATEGORY=$CAT_AGENT_PATCH_INVALID FAILURE_REASON=$REASON_PATCH_VALIDATION_FAILED isolated agent patch failed whitespace validation"
+  exit 1
+fi
+
+# Only reach here if parseable and whitespace-clean; import the patch.
 git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" \
   || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import isolated agent patch"
 
