@@ -21,17 +21,21 @@ function extractJson(body) {
   if (!trimmed) die("task body is empty");
   try {
     return JSON.parse(trimmed);
-  } catch {
+  } catch (e) {
     const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (fence) {
-      try { return JSON.parse(fence[1]); } catch {}
+      try { return JSON.parse(fence[1]); } catch (e2) {
+        die("fenced JSON block found but its content is not valid JSON: " + e2.message.split("\n")[0]);
+      }
     }
     const line = trimmed.split("\n").find((l) => l.trim().startsWith("{"));
     if (line) {
-      try { return JSON.parse(line); } catch {}
+      try { return JSON.parse(line); } catch (e3) {
+        die("JSON line found but not valid JSON: " + e3.message.split("\n")[0]);
+      }
     }
   }
-  die("could not parse a JSON task payload from the body");
+  die("could not parse a JSON task payload from the body: tried top-level JSON parse, fenced code block, and first JSON line — none succeeded");
 }
 
 function normalizeBoolean(value) {

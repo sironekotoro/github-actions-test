@@ -180,10 +180,30 @@ set +e
 ) > "$patch_file"
 diff_status=$?
 set -e
-[ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ] \
-  || fail_with "$CAT_AGENT_START" "could not create agent patch from isolated workspace"
+if [ "$diff_status" -eq 0 ]; then
+  fail_with "$CAT_PATCH_NO_CHANGES" "agent produced no working-tree changes; patch diff found no differences"
+fi
+[ "$diff_status" -eq 1 ] \
+  || fail_with "$CAT_AGENT_START" "could not create agent patch from isolated workspace (diff exit $diff_status)"
+
+if [ ! -s "$patch_file" ]; then
+  fail_with "$CAT_PATCH_EMPTY" "patch file exists but is empty (0 bytes); no content to validate"
+fi
+
+patch_byte_count="$(wc -c < "$patch_file")"
+patch_sha="$(sha256_of "$patch_file")"
+changed_files="$(grep -c '^diff --git' "$patch_file" || true)"
+log_info "patch: ${patch_byte_count} bytes, ${changed_files} changed file(s), sha256=${patch_sha}"
+
+# Validate in two stages: first check whether git apply can parse the patch at
+# all (no-index mode), then enforce strict whitespace rules.
+parse_temp="$(mktemp "$runtime_root/agent-patch-parse.XXXXXX")"
+git -C "$target_dir" apply --check -p2 "$patch_file" > "$parse_temp" 2>&1 \
+  || fail_with "$CAT_PATCH_PARSE_FAILED" "patch failed git apply --check parsing: $(head -1 "$parse_temp")"
+rm -f "$parse_temp"
+
 git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" \
-  || fail_with "$CAT_AGENT_PATCH_INVALID" "isolated agent patch failed validation"
+  || fail_with "$CAT_PATCH_VALIDATION_FAILED" "patch failed strict git apply --check --whitespace=error validation"
 git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" \
   || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import isolated agent patch"
 

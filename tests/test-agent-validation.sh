@@ -69,6 +69,14 @@ if [ "$command" = "run" ]; then
       valid)
         printf 'valid change\n' >> "$workspace_mount/file.txt"
         ;;
+      no_changes)
+        # Intentionally make no changes so workspace == base
+        ;;
+      parse_fail)
+        # Write a non-patch file to workspace that will be detected as changes
+        # but fail git apply parsing
+        printf 'not a valid patch content\n' > "$workspace_mount/invalid_patch_content.txt"
+        ;;
     esac
   fi
   exit 0
@@ -86,12 +94,26 @@ MOCK
 }
 
 # The trusted wrapper rejects a patch with trailing whitespace and records the
-# distinct post-agent validation category without changing the target tree.
+# distinct post-agent validation sub-category without changing the target tree.
 tmp="$(make_temp)"
 make_target "$tmp"
 run_container_case "$tmp" invalid
-t "invalid returned patch is rejected" "1|AGENT_PATCH_INVALID" "$(cat "$tmp/code")|$(cat "$tmp/failure_category")"
+t "invalid returned patch is rejected" "1|AGENT_PATCH_VALIDATION_FAILED" "$(cat "$tmp/code")|$(cat "$tmp/failure_category")"
 t "invalid returned patch is not imported" "base" "$(cat "$tmp/repo/file.txt")"
+
+# Agent that produces no working-tree changes must be detected distinctly.
+tmp="$(make_temp)"
+make_target "$tmp"
+run_container_case "$tmp" no_changes
+t "no changes detected" "1|AGENT_PATCH_NO_CHANGES" "$(cat "$tmp/code")|$(cat "$tmp/failure_category")"
+t "no changes does not alter target" "base" "$(cat "$tmp/repo/file.txt")"
+
+# Agent that produces a file that cannot be parsed by git apply.
+tmp="$(make_temp)"
+make_target "$tmp"
+run_container_case "$tmp" parse_fail
+t "parse failure detected" "1|AGENT_PATCH_PARSE_FAILED" "$(cat "$tmp/code")|$(cat "$tmp/failure_category")"
+t "parse failure does not alter target" "base" "$(cat "$tmp/repo/file.txt")"
 
 # A clean patch still crosses the same trusted import boundary successfully.
 tmp="$(make_temp)"
