@@ -49,7 +49,7 @@ is:
 | agent | profile | exact invocation | credential visible to the CLI |
 |---|---|---|---|
 | `opencode` | `openrouter` | `opencode run --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` |
-| `codex` | `openai-api` | `codex exec "$prompt"` | `OPENAI_API_KEY` |
+| `codex` | `openai-api` | `codex exec --skip-git-repo-check "$prompt"` | `OPENAI_API_KEY` |
 | `claude-code` | `anthropic-api` | `claude -p "$prompt"` | `ANTHROPIC_API_KEY` |
 
 The Codex and Claude adapters deliberately use their documented

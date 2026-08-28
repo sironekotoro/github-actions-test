@@ -57,7 +57,8 @@ MOCK
       ;;
     codex)
       t "Codex uses exec" exec "$(sed -n '1p' "$tmp/argv")"
-      t "Codex receives one prompt argument" 'prompt with spaces; $HOME must stay literal' "$(sed -n '2p' "$tmp/argv")"
+      t "Codex uses --skip-git-repo-check" --skip-git-repo-check "$(sed -n '2p' "$tmp/argv")"
+      t "Codex receives one prompt argument" 'prompt with spaces; $HOME must stay literal' "$(sed -n '3p' "$tmp/argv")"
       t "Codex adapter does not use legacy run" no "$(grep -qx run "$tmp/argv" && echo yes || echo no)"
       ;;
     claude-code)

@@ -27,7 +27,7 @@ agent_run() {
   local model="$1" prompt="$2" logfile="$3" max_runtime="$4"
   local credential_var="$5" credential_value="$6"
   agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
-    codex exec "$prompt"
+    codex exec --skip-git-repo-check "$prompt"
 }
 
 is_transient_agent_error() {
