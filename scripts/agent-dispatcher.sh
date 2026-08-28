@@ -29,14 +29,24 @@ agent_validate_and_prepare() {
   local agent="$1"
   agent_load_adapter "$agent"
 
+  local profile credential_var credential_value
+  if ! profile="$(resolve_credential_profile "$agent")"; then
+    return 1
+  fi
+  assert_execution_profile_supported "$profile"
+  credential_var="$(profile_env_var "$profile")"
+  if [ -n "$credential_var" ] && [ -n "${AGENT_CREDENTIAL_VALUE:-}" ]; then
+    credential_value="$AGENT_CREDENTIAL_VALUE"
+  else
+    credential_value="${!credential_var:-}"
+  fi
+  assert_credential_available "$profile" "$credential_value"
+
   if ! agent_check_available; then
     fail_with "$CAT_AGENT_UNAVAILABLE" "CLI for agent=$agent is not installed and auto-install is not available"
   fi
-  log_info "agent=$agent version=$(agent_get_version)"
+  log_info "agent=$agent version=$(agent_get_version "$credential_var" "$credential_value")" >&2
 
-  local profile
-  profile="$(resolve_credential_profile "$agent")"
-  assert_credential_available "$profile"
   credential_summary "$profile"
-  echo "$profile"
+  export AGENT_VALIDATED_PROFILE="$profile"
 }

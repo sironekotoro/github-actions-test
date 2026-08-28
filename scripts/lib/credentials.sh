@@ -10,10 +10,10 @@
 #   openrouter          - OpenRouter API key (repo secret OPENROUTER_API_KEY)
 #   openai-api          - OpenAI API key (repo secret OPENAI_API_KEY)
 #   chatgpt-subscription - Host-local ChatGPT subscription (no credential to inject;
-#                          requires CLI auth already configured on the runner)
+#                          represented for future trusted-host provisioning only)
 #   anthropic-api       - Anthropic API key (repo secret ANTHROPIC_API_KEY)
 #   claude-subscription - Host-local Claude Code subscription (no credential to inject;
-#                          requires CLI auth already configured on the runner)
+#                          represented for future trusted-host provisioning only)
 #
 # Compatibility matrix (agent -> allowed profiles):
 #   opencode    -> openrouter
@@ -110,28 +110,29 @@ resolve_credential_profile() {
 
 # assert_credential_available <profile> -> 0 if credential is available, fails closed
 assert_credential_available() {
-  local profile="$1" var
+  local profile="$1" var value
   if profile_is_subscription "$profile"; then
     return 0
   fi
   var="$(profile_env_var "$profile")"
-  if [ -z "${!var:-}" ]; then
+  if [ "$#" -ge 2 ]; then
+    value="$2"
+  else
+    value="${!var:-}"
+  fi
+  if [ -z "$value" ]; then
     fail_with "$CAT_AGENT_AUTH" "required credential $var is not set for profile=$profile"
   fi
   return 0
 }
 
-# emit_credential_env <profile> -> prints export statements for the given profile's
-# credential variables. Subscription profiles emit nothing.
-emit_credential_env() {
-  local profile="$1" var val
+# Subscription profiles remain part of the compatibility model, but there is
+# no safe credential handoff implementation yet. In particular, never fall
+# back to a host's pre-authenticated browser/CLI state from an untrusted job.
+assert_execution_profile_supported() {
+  local profile="$1"
   if profile_is_subscription "$profile"; then
-    return 0
-  fi
-  var="$(profile_env_var "$profile")"
-  val="${!var:-}"
-  if [ -n "$val" ]; then
-    printf '%s=%s\n' "$var" "$val"
+    fail_with "$CAT_AGENT_AUTH" "credential profile=$profile is unsupported in Agent Dispatch until trusted-host identity, per-job provisioning, and cleanup are implemented"
   fi
 }
 

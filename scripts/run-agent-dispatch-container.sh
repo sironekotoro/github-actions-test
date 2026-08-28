@@ -4,8 +4,10 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/lib/common.sh"
-source "$SCRIPT_DIR/lib/review-repair-cleanup.sh"
+_CONTAINER_SCRIPT_DIR="$SCRIPT_DIR"
+source "$_CONTAINER_SCRIPT_DIR/lib/common.sh"
+source "$_CONTAINER_SCRIPT_DIR/lib/credentials.sh"
+source "$_CONTAINER_SCRIPT_DIR/lib/review-repair-cleanup.sh"
 
 target_dir="${TARGET_DIR:-$PWD}"
 task_file="${TASK_FILE:-${RUNNER_TEMP:-/tmp}/task.json}"
@@ -19,6 +21,26 @@ egress_image="agent-dispatch-egress:$run_key"
 [ -d "$target_dir/.git" ] || fail_with "$CAT_AGENT_START" "validated target checkout is missing .git"
 [ -f "$task_file" ] || fail_with "$CAT_AGENT_START" "validated task is missing"
 [ -n "$run_key" ] || fail_with "$CAT_AGENT_START" "agent dispatch run identifier is invalid"
+
+# Resolve and validate the selected profile before creating any container or
+# starting the agent. The outer shell receives at most one generic credential
+# value; the inner clean environment maps it to the exact provider variable.
+agent="$(jq -r '.agent // "opencode"' "$task_file")"
+if ! profile="$(resolve_credential_profile "$agent")"; then
+  exit 1
+fi
+assert_execution_profile_supported "$profile"
+cred_var="$(profile_env_var "$profile")"
+agent_credential=""
+if [ -n "$cred_var" ]; then
+  if [ -n "${AGENT_CREDENTIAL_VALUE:-}" ]; then
+    agent_credential="$AGENT_CREDENTIAL_VALUE"
+  else
+    agent_credential="${!cred_var:-}"
+  fi
+  assert_credential_available "$profile" "$agent_credential"
+fi
+
 command -v docker >/dev/null 2>&1 || fail_with "$CAT_AGENT_START" "docker is required for isolated Agent Dispatch"
 docker info >/dev/null 2>&1 || fail_with "$CAT_AGENT_START" "docker daemon is unavailable for isolated Agent Dispatch"
 docker image inspect "$agent_image" >/dev/null 2>&1 || fail_with "$CAT_AGENT_START" "trusted Agent Dispatch image is unavailable"
@@ -72,25 +94,20 @@ tar -C "$target_dir" --exclude=.git -cf - . | tar -C "$base_dir" -xf - \
 tar -C "$base_dir" -cf - . | tar -C "$workspace_dir" -xf - \
   || fail_with "$CAT_AGENT_START" "could not create isolated agent workspace"
 TASK_FILE="$task_file" PROMPT_FILE="$prompt_file" \
-  bash "$SCRIPT_DIR/build-agent-prompt.sh" \
+  bash "$_CONTAINER_SCRIPT_DIR/build-agent-prompt.sh" \
   || fail_with "$CAT_AGENT_START" "could not prepare isolated agent prompt"
 chmod 700 "$agent_root" "$base_dir" "$workspace_dir" "$prompt_dir"
 chmod 400 "$prompt_file"
 
-# source credentials and resolve the selected agent's credential
-source "$SCRIPT_DIR/lib/credentials.sh"
-agent_credential=""
-agent="$(jq -r '.agent // "opencode"' "$task_file")"
-profile="$(resolve_credential_profile "$agent")"
-cred_var="$(profile_env_var "$profile")"
-if [ -n "$cred_var" ]; then
-  agent_credential="${!cred_var:-}"
-  credential_env="--env ${cred_var}=${agent_credential}"
-else
-  credential_env=""
-fi
-
 agent_started_epoch="$(date +%s)"
+credential_args=()
+if [ -n "$cred_var" ]; then
+  # Docker reads the value from this one exported variable; do not put the
+  # secret itself in the docker command-line arguments visible to host tools.
+  AGENT_CREDENTIAL_VALUE="$agent_credential"
+  export AGENT_CREDENTIAL_VALUE
+  credential_args+=(--env AGENT_CREDENTIAL_VALUE)
+fi
 set +e
 docker run --rm --init \
   --network "$private_network" \
@@ -119,16 +136,21 @@ docker run --rm --init \
   --env RUNNER_TEMP=/tmp \
   --env AGENT_LOG=/tmp/agent.log \
   --env GITHUB_OUTPUT=/tmp/agent-output \
+  --env AGENT="$agent" \
+  --env AGENT_CREDENTIAL_PROFILE="$profile" \
   --env AGENT_MAX_RUNTIME="${AGENT_MAX_RUNTIME:-30}" \
   --env OPENROUTER_MODEL="${OPENROUTER_MODEL:-}" \
   --env AGENT_AUTO_INSTALL=false \
-  $credential_env \
+  "${credential_args[@]}" \
   "$agent_image" bash -ceu '
     bash /opt/review-repair-runner/run-agent.sh
     # Repository tests are untrusted code and do not inherit the API key.
     unset OPENROUTER_API_KEY
     unset OPENAI_API_KEY
     unset ANTHROPIC_API_KEY
+    unset AGENT_CREDENTIAL_VALUE
+    unset AGENT_CREDENTIAL_PROFILE
+    unset AGENT
     if [ -f package.json ]; then
       npm test
     fi
@@ -165,6 +187,6 @@ git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" \
 git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" \
   || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import isolated agent patch"
 
-summary "| agent isolation | Docker; non-root; read-only root; OpenRouter-only egress; no host credentials, .git, or Docker socket |"
+summary "| agent isolation | Docker; non-root; read-only root; provider-allowlisted egress; selected credential only; no host credentials, .git, or Docker socket |"
 summary "| tests | pass (isolated agent container) |"
 echo "result=pass" >> "${GITHUB_OUTPUT:-/dev/null}"

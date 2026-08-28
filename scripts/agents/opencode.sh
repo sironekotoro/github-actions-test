@@ -23,19 +23,14 @@ agent_check_available() {
 }
 
 agent_get_version() {
-  opencode --version 2>&1 | head -1
+  agent_exec_clean "${1:-}" "${2:-}" -- opencode --version 2>&1 | head -1
 }
 
 agent_run() {
-  local model="$1" prompt="$2" logfile="$3" max_runtime="$4" credential_env="$5"
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "${max_runtime}m" env $credential_env \
-      opencode run --print-logs -m "$model" "$prompt" >"$logfile" 2>&1
-  else
-    env $credential_env \
-      opencode run --print-logs -m "$model" "$prompt" >"$logfile" 2>&1
-  fi
-  return $?
+  local model="$1" prompt="$2" logfile="$3" max_runtime="$4"
+  local credential_var="$5" credential_value="$6"
+  agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
+    opencode run --print-logs -m "$model" "$prompt"
 }
 
 is_transient_agent_error() {

@@ -83,3 +83,47 @@ sha256_of() {
     && shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 \
     || openssl dgst -sha256 "$1" 2>/dev/null | awk '{print $NF}'
 }
+
+# agent_exec_clean <credential-var> <credential-value> -- <command...>
+#
+# Execute one command from a deliberately minimal environment. The workflow
+# shell may contain several secrets and GitHub credentials; neither those
+# names nor arbitrary inherited variables are allowed to reach the CLI.
+agent_exec_clean() {
+  local credential_var="$1" credential_value="$2"
+  shift 2
+  [ "${1:-}" = "--" ] && shift
+
+  local -a clean_env=()
+  [ -n "${PATH+x}" ] && clean_env+=("PATH=$PATH")
+  [ -n "${HOME+x}" ] && clean_env+=("HOME=$HOME")
+  [ -n "${TMPDIR+x}" ] && clean_env+=("TMPDIR=$TMPDIR")
+  [ -n "${TMP+x}" ] && clean_env+=("TMP=$TMP")
+  [ -n "${TEMP+x}" ] && clean_env+=("TEMP=$TEMP")
+  [ -n "${LANG+x}" ] && clean_env+=("LANG=$LANG")
+  [ -n "${LC_ALL+x}" ] && clean_env+=("LC_ALL=$LC_ALL")
+  [ -n "${LANGUAGE+x}" ] && clean_env+=("LANGUAGE=$LANGUAGE")
+  [ -n "${TERM+x}" ] && clean_env+=("TERM=$TERM")
+  [ -n "${HTTPS_PROXY+x}" ] && clean_env+=("HTTPS_PROXY=$HTTPS_PROXY")
+  [ -n "${HTTP_PROXY+x}" ] && clean_env+=("HTTP_PROXY=$HTTP_PROXY")
+  [ -n "${ALL_PROXY+x}" ] && clean_env+=("ALL_PROXY=$ALL_PROXY")
+  [ -n "${NO_PROXY+x}" ] && clean_env+=("NO_PROXY=$NO_PROXY")
+  [ -n "${SSL_CERT_FILE+x}" ] && clean_env+=("SSL_CERT_FILE=$SSL_CERT_FILE")
+  [ -n "${NODE_EXTRA_CA_CERTS+x}" ] && clean_env+=("NODE_EXTRA_CA_CERTS=$NODE_EXTRA_CA_CERTS")
+  [ -n "$credential_var" ] && clean_env+=("$credential_var=$credential_value")
+
+  env -i "${clean_env[@]}" "$@"
+}
+
+# agent_run_clean <credential-var> <credential-value> <minutes> <logfile> -- <command...>
+agent_run_clean() {
+  local credential_var="$1" credential_value="$2" max_runtime="$3" logfile="$4"
+  shift 4
+  [ "${1:-}" = "--" ] && shift
+
+  if command -v timeout >/dev/null 2>&1; then
+    agent_exec_clean "$credential_var" "$credential_value" -- timeout "${max_runtime}m" "$@" >"$logfile" 2>&1
+  else
+    agent_exec_clean "$credential_var" "$credential_value" -- "$@" >"$logfile" 2>&1
+  fi
+}

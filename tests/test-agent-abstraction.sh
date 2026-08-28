@@ -11,6 +11,8 @@ CREDENTIALS="$ROOT/scripts/lib/credentials.sh"
 RUN_AGENT="$ROOT/scripts/run-agent.sh"
 WORKFLOW="$ROOT/.github/workflows/agent-dispatch.yml"
 ACTION="$ROOT/.github/actions/agent-dispatch/action.yml"
+DOCKERFILE="$ROOT/docker/review-repair-agent.Dockerfile"
+SQUID="$ROOT/docker/review-repair-squid.conf"
 
 # ============================================================
 # 1. Agent input parsing (parse-task.mjs)
@@ -140,11 +142,11 @@ profile_is_subscription openrouter && t "openrouter is not subscription" "no" "y
 
 tmp="$(make_temp)"
 mkdir -p "$tmp/bin"
-cat > "$tmp/bin/opencode" <<'MOCK'
+cat > "$tmp/bin/opencode" <<MOCK
 #!/usr/bin/env bash
-echo "OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}" > "$MOCK_CRED_OUT"
-echo "OPENAI_API_KEY=${OPENAI_API_KEY:-}" >> "$MOCK_CRED_OUT"
-echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}" >> "$MOCK_CRED_OUT"
+echo "OPENROUTER_API_KEY=\${OPENROUTER_API_KEY:-}" > "$tmp/cred_visible.txt"
+echo "OPENAI_API_KEY=\${OPENAI_API_KEY:-}" >> "$tmp/cred_visible.txt"
+echo "ANTHROPIC_API_KEY=\${ANTHROPIC_API_KEY:-}" >> "$tmp/cred_visible.txt"
 exit 0
 MOCK
 chmod +x "$tmp/bin/opencode"
@@ -168,7 +170,9 @@ JSON
   OPENROUTER_API_KEY="sk-or-test-key"
   OPENAI_API_KEY=""
   ANTHROPIC_API_KEY=""
-  MOCK_CRED_OUT="$tmp/cred_visible.txt"
+  export PATH RUNNER_TEMP TASK_FILE PROMPT_FILE AGENT_LOG GITHUB_STEP_SUMMARY GITHUB_OUTPUT \
+    AGENT_CREDENTIAL_PROFILE AGENT_AUTO_INSTALL AGENT_MAX_ATTEMPTS AGENT_USE_PREBUILT_PROMPT \
+    OPENROUTER_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY
   printf 'prompt content\n' > "$tmp/prompt_for_cred.txt"
   bash "$RUN_AGENT" >/dev/null 2>&1
 )
@@ -196,10 +200,13 @@ chmod +x "$tmp/bin/claude"
   AGENT_CREDENTIAL_PROFILE=claude-subscription
   source "$CREDENTIALS" 2>/dev/null
 ) && true
-# Just verify the function is defined; it should not fail for a subscription profile
-# since subscription profiles don't require an env var
+# The profile remains representable, but execution must fail closed until a
+# trusted-host subscription credential handoff exists.
 profile_is_subscription claude-subscription
 t "claude-subscription is subscription" "0" "$?"
+tmp_auth="$(make_temp)"
+( RUNNER_TEMP="$tmp_auth" bash -c "source '$CREDENTIALS'; assert_execution_profile_supported claude-subscription" 2>/dev/null )
+t "claude-subscription execution fails closed" "1|AGENT_AUTH_FAILED" "$?|$(cat "$tmp_auth/failure_category")"
 
 # ============================================================
 # 6. Prompt/secret values not logged (smoke check)
@@ -230,6 +237,8 @@ printf 'SECRET_PROMPT_CONTENT_XYZ\n' > "$tmp/prompt_silent.txt"
   AGENT_MAX_ATTEMPTS=1
   AGENT_USE_PREBUILT_PROMPT=true
   OPENROUTER_API_KEY=""
+  export PATH RUNNER_TEMP TASK_FILE PROMPT_FILE AGENT_LOG GITHUB_STEP_SUMMARY GITHUB_OUTPUT \
+    AGENT_CREDENTIAL_PROFILE AGENT_AUTO_INSTALL AGENT_MAX_ATTEMPTS AGENT_USE_PREBUILT_PROMPT OPENROUTER_API_KEY
   bash "$RUN_AGENT" >"$tmp/stdout_silent.log" 2>"$tmp/stderr_silent.log"
 )
 if grep -q 'SECRET_PROMPT_CONTENT_XYZ' "$tmp/stdout_silent.log" "$tmp/stderr_silent.log" "$tmp/summary_silent.md" 2>/dev/null; then
@@ -259,8 +268,12 @@ t "action has agent input" "yes" "$(grep -q "agent:" "$ACTION" && echo yes || ec
 # 9. Docker container only gets selected credential
 # ============================================================
 
-t "container step only passes openrouter key for opencode" "yes" "$(grep -A10 'agent_same_isolated' "$ACTION" | grep -q 'OPENROUTER_API_KEY.*steps.parse.outputs.agent.*opencode' && echo yes || echo no)"
-t "container step passes openai key for codex" "yes" "$(grep -A10 'agent_same_isolated' "$ACTION" | grep -q 'OPENAI_API_KEY.*steps.parse.outputs.agent.*codex' && echo yes || echo no)"
-t "container step passes anthropic key for claude-code" "yes" "$(grep -A10 'agent_same_isolated' "$ACTION" | grep -q 'ANTHROPIC_API_KEY.*steps.parse.outputs.agent.*claude-code' && echo yes || echo no)"
+t "container step passes one generic selected credential" "yes" "$(grep -A10 'agent_same_isolated' "$ACTION" | grep -q 'AGENT_CREDENTIAL_VALUE:' && echo yes || echo no)"
+t "container wrapper maps credential by profile" "yes" "$(grep -q 'AGENT_CREDENTIAL_VALUE' "$ROOT/scripts/run-agent.sh" && grep -q 'profile_env_var' "$ROOT/scripts/run-agent.sh" && echo yes || echo no)"
+t "container action does not inject provider env names" "yes" "$(if grep -A12 'agent_same_isolated' "$ACTION" | grep -qE 'OPENROUTER_API_KEY:|OPENAI_API_KEY:|ANTHROPIC_API_KEY:'; then echo no; else echo yes; fi)"
+t "agent image provisions pinned Codex CLI" "yes" "$(grep -q '@openai/codex@\${CODEX_CLI_VERSION}' "$DOCKERFILE" && grep -q 'CODEX_CLI_VERSION=0.147.0' "$DOCKERFILE" && echo yes || echo no)"
+t "agent image provisions pinned Claude CLI" "yes" "$(grep -q '@anthropic-ai/claude-code@\${CLAUDE_CODE_VERSION}' "$DOCKERFILE" && grep -q 'CLAUDE_CODE_VERSION=2.1.165' "$DOCKERFILE" && echo yes || echo no)"
+t "agent egress allowlists all API providers" "yes" "$(grep -q 'openrouter.ai' "$SQUID" && grep -q 'api.openai.com' "$SQUID" && grep -q 'api.anthropic.com' "$SQUID" && grep -q 'http_access deny all' "$SQUID" && echo yes || echo no)"
+t "clean agent execution uses env -i" "yes" "$(grep -q 'env -i' "$ROOT/scripts/lib/common.sh" && echo yes || echo no)"
 
 finish

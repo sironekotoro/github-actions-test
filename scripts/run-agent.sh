@@ -25,15 +25,32 @@ TASK_FILE="${TASK_FILE:-$runtime_temp/task.json}"
 PROMPT_FILE="${PROMPT_FILE:-$runtime_temp/agent-prompt.txt}"
 AGENT_LOG="${AGENT_LOG:-$runtime_temp/agent.log}"
 
+# API-backed hosted runs must not reuse a runner user's CLI configuration. The
+# isolated container supplies its own /home/agent and does not set AGENT_HOME.
+if [ -n "${AGENT_HOME:-}" ]; then
+  mkdir -p "$AGENT_HOME" || fail_with "$CAT_AGENT_START" "could not create isolated agent home"
+  HOME="$AGENT_HOME"
+  export HOME
+fi
+
 # --- resolve agent ---
-agent="$(agent_from_task "$TASK_FILE")"
+# A prebuilt prompt in the isolated container intentionally has no task file.
+# The trusted outer wrapper passes the normalized agent explicitly in that
+# case; direct prebuilt callers default to OpenCode. A real task file always
+# remains authoritative, so an unknown task agent still fails closed.
+agent="${AGENT:-opencode}"
+if [ -f "$TASK_FILE" ]; then
+  agent="$(agent_from_task "$TASK_FILE")"
+fi
 profile=""
 if [ "${AGENT_USE_PREBUILT_PROMPT:-false}" = "true" ]; then
   [ -s "$PROMPT_FILE" ] || fail_with "$CAT_AGENT_START" "trusted prebuilt prompt is missing"
   model="${AGENT_MODEL:-${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}}"
   max_runtime="${AGENT_MAX_RUNTIME:-10}"
   agent_load_adapter "$agent"
-  profile="$(resolve_credential_profile "$agent")"
+  if ! profile="$(resolve_credential_profile "$agent")"; then
+    exit 1
+  fi
 else
   # --- build the prompt (with injected target identity) ---
   prompt_builder="$_RUN_AGENT_SCRIPT_DIR/build-agent-prompt.sh"
@@ -46,32 +63,41 @@ else
   max_runtime="$(jq -r '.max_runtime // ""' "$TASK_FILE")"
   [ -z "$max_runtime" ] && max_runtime="${AGENT_MAX_RUNTIME:-10}"
   agent_load_adapter "$agent"
-  profile="$(agent_validate_and_prepare "$agent")"
+  agent_validate_and_prepare "$agent" || exit $?
+  profile="$AGENT_VALIDATED_PROFILE"
 fi
-[ -n "$profile" ] || profile="$(resolve_credential_profile "$agent")"
+[ -n "$profile" ] || {
+  if ! profile="$(resolve_credential_profile "$agent")"; then
+    exit 1
+  fi
+}
 max_attempts="${AGENT_MAX_ATTEMPTS:-2}"
+
+assert_execution_profile_supported "$profile"
+credential_var="$(profile_env_var "$profile")"
+credential_value=""
+if [ -n "$credential_var" ]; then
+  if [ -n "${AGENT_CREDENTIAL_VALUE:-}" ]; then
+    credential_value="$AGENT_CREDENTIAL_VALUE"
+  else
+    credential_value="${!credential_var:-}"
+  fi
+  assert_credential_available "$profile" "$credential_value"
+fi
 
 # --- ensure agent is available ---
 agent_check_available || fail_with "$CAT_AGENT_UNAVAILABLE" "agent=$agent CLI is not available"
-log_info "agent=$agent version=$(agent_get_version)"
+log_info "agent=$agent version=$(agent_get_version "$credential_var" "$credential_value")"
 
 # --- read prompt once; single quoted arg = injection-safe ---
 PROMPT="$(<"$PROMPT_FILE")"
-
-# --- build credential env string (only the selected profile's vars) ---
-credential_env=""
-if profile_is_subscription "$profile"; then
-  credential_env=""
-else
-  credential_env="$(emit_credential_env "$profile" | tr '\n' ' ')"
-fi
 
 attempt=1
 status=0
 agent_started_epoch="$(date +%s)"
 while :; do
   log_info "agent=$agent attempt $attempt/$max_attempts (model=$model, max_runtime=${max_runtime}m)"
-  agent_run "$model" "$PROMPT" "$AGENT_LOG" "$max_runtime" "$credential_env"
+  agent_run "$model" "$PROMPT" "$AGENT_LOG" "$max_runtime" "$credential_var" "$credential_value"
   status=$?
 
   if [ "$status" -eq 0 ]; then

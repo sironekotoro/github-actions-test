@@ -23,7 +23,7 @@ sironekotoro/github-actions-test
                   ↓ checkout ./target
                   ↓ verify target checkout identity
   ↓ dry-run OR prepare agent/<task_id>
-  ↓ OpenCode (fresh session)
+  ↓ selected coding agent (fresh session; adapter-controlled)
   ↓ tests / commit / push / PR in target repo
   ↓ feedback to central Issue
 ```
@@ -84,6 +84,25 @@ Cross-repoを初めて試す場合は `dry_run=true` を推奨する。dry-run�
 Cross-repo path は `CROSS_REPO_ENABLED=true` の Actions variable と GitHub App secrets が揃うまで fail-closed。
 
 GitHub Appの最小権限・5分セットアップ手順は [docs/CROSS_REPO_DISPATCH.md](docs/CROSS_REPO_DISPATCH.md) を参照。
+
+## Agent / credential profiles
+
+`agent` と `runner_mode` は独立して選択できます。API-backed profiles の対応は次のとおりです。
+
+| agent | profile | CLI | agent process に渡す credential |
+|---|---|---|---|
+| `opencode` | `openrouter` | `opencode run --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` |
+| `codex` | `openai-api` | `codex exec "$prompt"` | `OPENAI_API_KEY` |
+| `claude-code` | `anthropic-api` | `claude -p "$prompt"` | `ANTHROPIC_API_KEY` |
+
+workflow は選択された秘密値だけを `AGENT_CREDENTIAL_VALUE` として渡し、
+`run-agent.sh` が `env -i` の clean environment 内で対応する名前へ変換します。
+他の API key、`GH_TOKEN` / `GITHUB_TOKEN`、host の CLI 認証状態は agent process に
+入りません。self-hosted image には pinned versions の3 CLIを含めます。
+
+`chatgpt-subscription` と `claude-subscription` は将来の安全な credential handoff 用に
+profile として表現されていますが、現在は `AGENT_AUTH_FAILED` で実行前に fail-closed
+します。host の既存ログイン状態への fallback はありません。
 
 ## 重要な安全策
 

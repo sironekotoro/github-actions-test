@@ -5,9 +5,8 @@
 #   1. Anthropic API key (profile=anthropic-api) via ANTHROPIC_API_KEY env var
 #   2. Claude subscription (profile=claude-subscription) via host-local auth
 #
-# Subscription mode assumes the CLI has been pre-authenticated on the runner.
-# This profile is intentionally fail-closed on hosted executors; the credential
-# must be provisioned explicitly on self-hosted runners.
+# Subscription mode is represented by the profile matrix but is rejected before
+# execution until trusted-host identity and per-job credential cleanup exist.
 set -uo pipefail
 
 _ADAPTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,20 +20,14 @@ agent_check_available() {
 }
 
 agent_get_version() {
-  claude --version 2>&1 | head -1
+  agent_exec_clean "${1:-}" "${2:-}" -- claude --version 2>&1 | head -1
 }
 
 agent_run() {
-  local model="$1" prompt="$2" logfile="$3" max_runtime="$4" credential_env="$5"
-  # Claude Code uses ANTHROPIC_API_KEY in the environment
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "${max_runtime}m" env $credential_env \
-      claude run "$prompt" >"$logfile" 2>&1
-  else
-    env $credential_env \
-      claude run "$prompt" >"$logfile" 2>&1
-  fi
-  return $?
+  local model="$1" prompt="$2" logfile="$3" max_runtime="$4"
+  local credential_var="$5" credential_value="$6"
+  agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
+    claude -p "$prompt"
 }
 
 is_transient_agent_error() {

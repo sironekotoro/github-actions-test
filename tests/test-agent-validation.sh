@@ -79,7 +79,9 @@ MOCK
   chmod +x "$tmp/bin/docker"
   ( cd "$tmp/repo" && PATH="$tmp/bin:$PATH" MOCK_DOCKER_MODE="$mode" \
       RUNNER_TEMP="$tmp" GITHUB_RUN_ID=validation123 GITHUB_OUTPUT="$tmp/out" \
-      TASK_FILE="$tmp/task.json" bash "$CONTAINER" >"$tmp/stdout" 2>"$tmp/stderr" )
+      TASK_FILE="$tmp/task.json" AGENT_CREDENTIAL_VALUE=mock-openrouter-key \
+      export PATH MOCK_DOCKER_MODE RUNNER_TEMP GITHUB_RUN_ID GITHUB_OUTPUT TASK_FILE AGENT_CREDENTIAL_VALUE; \
+      bash "$CONTAINER" >"$tmp/stdout" 2>"$tmp/stderr" )
   printf '%s\n' "$?" > "$tmp/code"
 }
 
@@ -126,7 +128,11 @@ MOCK
       PROMPT_FILE="$tmp/prompt" AGENT_LOG="$tmp/agent.log" \
       AGENT_USE_PREBUILT_PROMPT=true AGENT_AUTO_INSTALL=false \
       AGENT_MAX_ATTEMPTS=1 AGENT_MAX_RUNTIME=1 OPENROUTER_MODEL=test/model \
-      OPENROUTER_API_KEY= bash "$RUN_AGENT" >"$tmp/stdout" 2>"$tmp/stderr" )
+      OPENROUTER_API_KEY=mock-openrouter-key; \
+      export PATH MOCK_AGENT_MODE RUNNER_TEMP GITHUB_OUTPUT GITHUB_STEP_SUMMARY PROMPT_FILE AGENT_LOG \
+        AGENT_USE_PREBUILT_PROMPT AGENT_AUTO_INSTALL AGENT_MAX_ATTEMPTS AGENT_MAX_RUNTIME \
+        OPENROUTER_MODEL OPENROUTER_API_KEY; \
+      bash "$RUN_AGENT" >"$tmp/stdout" 2>"$tmp/stderr" )
   printf '%s\n' "$?" > "$tmp/code"
 }
 

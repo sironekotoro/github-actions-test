@@ -230,11 +230,12 @@ jobs:
         if: steps.prep_same.outputs.result == 'pass'
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Resolve one provider credential from the normalized agent choice.
+          # run-agent.sh maps this value to the selected CLI's exact variable
+          # only inside its clean child environment.
+          AGENT_CREDENTIAL_VALUE: ${{ steps.parse.outputs.agent == 'opencode' && secrets.OPENROUTER_API_KEY || steps.parse.outputs.agent == 'codex' && secrets.OPENAI_API_KEY || steps.parse.outputs.agent == 'claude-code' && secrets.ANTHROPIC_API_KEY || '' }}
+          AGENT_HOME: ${{ runner.temp }}/agent-home
           OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
-          GH_TOKEN: ${{ github.token }}
         run: bash scripts/run-agent.sh
 
       - name: Run cross-repo coding agent
@@ -243,11 +244,9 @@ jobs:
         working-directory: target
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENT_CREDENTIAL_VALUE: ${{ steps.parse.outputs.agent == 'opencode' && secrets.OPENROUTER_API_KEY || steps.parse.outputs.agent == 'codex' && secrets.OPENAI_API_KEY || steps.parse.outputs.agent == 'claude-code' && secrets.ANTHROPIC_API_KEY || '' }}
+          AGENT_HOME: ${{ runner.temp }}/agent-home
           OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: bash ../scripts/run-agent.sh
 
       # GitHub-hosted execution has no isolated trusted outer wrapper. Keep
@@ -342,8 +341,9 @@ jobs:
           cross_repo_enabled: ${{ vars.CROSS_REPO_ENABLED || 'false' }}
           app_id: ${{ secrets.GH_APP_ID }}
           app_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          # The action receives one selected credential. The legacy per-agent
+          # inputs remain available for compatibility but are not populated by
+          # this workflow.
+          agent_credential: ${{ needs.route.outputs.agent == 'opencode' && secrets.OPENROUTER_API_KEY || needs.route.outputs.agent == 'codex' && secrets.OPENAI_API_KEY || needs.route.outputs.agent == 'claude-code' && secrets.ANTHROPIC_API_KEY || '' }}
           openrouter_model: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          agent: ${{ inputs.agent || 'opencode' }}
+          agent: ${{ needs.route.outputs.agent || 'opencode' }}

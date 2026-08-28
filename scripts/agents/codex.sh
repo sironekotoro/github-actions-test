@@ -2,12 +2,11 @@
 # Codex CLI agent adapter. CLI: `codex`.
 #
 # Codex supports two authentication modes:
-#   1. OpenAI API key (profile=openai-api) via --api-key or OPENAI_API_KEY env var
+#   1. OpenAI API key (profile=openai-api) via OPENAI_API_KEY env var
 #   2. ChatGPT subscription (profile=chatgpt-subscription) via host-local auth
 #
-# Subscription mode assumes the CLI has been pre-authenticated on the runner.
-# In CI, only the API key mode is exercised safely; subscription is fail-closed
-# when unconfigured.
+# Subscription mode is represented by the profile matrix but is rejected before
+# execution until trusted-host identity and per-job credential cleanup exist.
 set -uo pipefail
 
 _ADAPTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,24 +20,14 @@ agent_check_available() {
 }
 
 agent_get_version() {
-  codex --version 2>&1 | head -1
+  agent_exec_clean "${1:-}" "${2:-}" -- codex --version 2>&1 | head -1
 }
 
 agent_run() {
-  local model="$1" prompt="$2" logfile="$3" max_runtime="$4" credential_env="$5"
-  local profile="${AGENT_CREDENTIAL_PROFILE:-openai-api}"
-  local codex_args=""
-  if [ "$profile" = "openai-api" ]; then
-    codex_args="--api-key"
-  fi
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "${max_runtime}m" env $credential_env \
-      codex run $codex_args "$prompt" >"$logfile" 2>&1
-  else
-    env $credential_env \
-      codex run $codex_args "$prompt" >"$logfile" 2>&1
-  fi
-  return $?
+  local model="$1" prompt="$2" logfile="$3" max_runtime="$4"
+  local credential_var="$5" credential_value="$6"
+  agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
+    codex exec "$prompt"
 }
 
 is_transient_agent_error() {
