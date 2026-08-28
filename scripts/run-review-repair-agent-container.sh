@@ -5,8 +5,9 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/lib/common.sh"
-source "$SCRIPT_DIR/lib/review-repair-cleanup.sh"
+_REVIEW_SCRIPT_DIR="$SCRIPT_DIR"
+source "$_REVIEW_SCRIPT_DIR/lib/common.sh"
+source "$_REVIEW_SCRIPT_DIR/lib/review-repair-cleanup.sh"
 
 target_dir="${TARGET_DIR:-$PWD}"
 task_file="${TASK_FILE:-${RUNNER_TEMP:-/tmp}/task.json}"
@@ -73,13 +74,15 @@ tar -C "$target_dir" --exclude=.git -cf - . | tar -C "$base_dir" -xf - \
 tar -C "$base_dir" -cf - . | tar -C "$workspace_dir" -xf - \
   || fail_with "$CAT_AGENT_START" "could not create isolated agent workspace"
 TASK_FILE="$task_file" PROMPT_FILE="$prompt_file" \
-  bash "$SCRIPT_DIR/build-review-prompt.sh" \
+  bash "$_REVIEW_SCRIPT_DIR/build-review-prompt.sh" \
   || fail_with "$CAT_AGENT_START" "could not prepare isolated agent prompt"
 chmod 700 "$agent_root" "$base_dir" "$workspace_dir" "$prompt_dir"
 chmod 400 "$prompt_file"
 
 agent_started_epoch="$(date +%s)"
 set +e
+# Pass the single review credential by name so its value is not present in
+# the host-visible docker command line.
 docker run --rm --init \
   --network "$private_network" \
   --dns 127.0.0.1 \
@@ -107,7 +110,7 @@ docker run --rm --init \
   --env AGENT_LOG=/tmp/agent.log \
   --env GITHUB_OUTPUT=/tmp/agent-output \
   --env AGENT_MAX_RUNTIME="${AGENT_MAX_RUNTIME:-45}" \
-  --env OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" \
+  --env OPENROUTER_API_KEY \
   --env OPENROUTER_MODEL="${OPENROUTER_MODEL:-}" \
   --env AGENT_AUTO_INSTALL=false \
   "$agent_image" bash -ceu '

@@ -25,20 +25,20 @@ JSON
 
 # mock opencode that records its arguments instead of doing anything
 mkdir -p "$tmp/bin"
-cat > "$tmp/bin/opencode" <<'MOCK'
+cat > "$tmp/bin/opencode" <<MOCK
 #!/usr/bin/env bash
-echo "$#" > "$MOCK_FILE"
-printf '%s' "${@: -1}" > "$MOCK_LASTARG"
+echo "\$#" > "$tmp/argcount"
+printf '%s' "\${@: -1}" > "$tmp/lastarg"
 exit 0
 MOCK
 chmod +x "$tmp/bin/opencode"
 
-( cd "$tmp" \
-  && PATH="$tmp/bin:$PATH" MOCK_FILE="$tmp/argcount" MOCK_LASTARG="$tmp/lastarg" \
-     RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out.txt" GITHUB_STEP_SUMMARY="$tmp/summary.md" \
-     TASK_FILE="$tmp/task.json" PROMPT_FILE="$tmp/agent-prompt.txt" AGENT_LOG="$tmp/agent.log" \
-     OPENROUTER_API_KEY="" OPENROUTER_MODEL="test/model" \
-     bash "$RUN_AGENT" >"$tmp/stdout.log" 2>"$tmp/stderr.log" )
+( cd "$tmp" || exit 1
+  export PATH="$tmp/bin:$PATH" MOCK_FILE="$tmp/argcount" MOCK_LASTARG="$tmp/lastarg"
+  export RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out.txt" GITHUB_STEP_SUMMARY="$tmp/summary.md"
+  export TASK_FILE="$tmp/task.json" PROMPT_FILE="$tmp/agent-prompt.txt" AGENT_LOG="$tmp/agent.log"
+  export OPENROUTER_API_KEY="mock-openrouter-key" OPENROUTER_MODEL="test/model"
+  bash "$RUN_AGENT" >"$tmp/stdout.log" 2>"$tmp/stderr.log" )
 code=$?
 t "T32 agent exits 0" "0" "$code"
 

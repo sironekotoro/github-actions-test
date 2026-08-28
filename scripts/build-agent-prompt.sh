@@ -19,10 +19,13 @@ target_repo="$(jq -r '.target_repository' "$TASK_FILE")"
 task_prompt="$(jq -r '.prompt' "$TASK_FILE")"
 title="$(jq -r '.title' "$TASK_FILE")"
 source_label="$(jq -r '.source' "$TASK_FILE")"
+agent="$(jq -r '.agent // "opencode"' "$TASK_FILE")"
 
 {
   printf '%s\n' "TARGET REPOSITORY:"
   printf '%s\n' "$target_repo"
+  printf '%s\n' ""
+  printf '%s\n' "CODING AGENT: $agent"
   printf '%s\n' ""
   printf '%s\n' "You are running inside a GitHub Actions job for this task."
   printf '%s\n' ""
@@ -61,4 +64,4 @@ source_label="$(jq -r '.source' "$TASK_FILE")"
 } > "$PROMPT_FILE"
 
 # Log metadata only.
-log_info "prompt written: bytes=$(wc -c < "$PROMPT_FILE") sha256=$(sha256_of "$PROMPT_FILE") title=$title source=$source_label"
+log_info "prompt written: bytes=$(wc -c < "$PROMPT_FILE") sha256=$(sha256_of "$PROMPT_FILE") title=$title source=$source_label agent=$agent"

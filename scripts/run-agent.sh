@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Run the coding agent (opencode via OpenRouter) with bounded time and retries.
+# Run the coding agent with bounded time and retries.
+#
+# The agent type is read from the task JSON (default: opencode). Its adapter
+# handles CLI-specific invocation. Credential profiles are resolved by
+# lib/credentials.sh and only the selected agent's credential is injected.
 #
 # Injection safety: the prompt is read from a file into a variable and passed
 # as a single quoted argument. It is NEVER shell-interpolated.
@@ -7,70 +11,93 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Save SCRIPT_DIR before sub-files overwrite it
+_RUN_AGENT_SCRIPT_DIR="$SCRIPT_DIR"
 # shellcheck source=lib/common.sh
-source "$SCRIPT_DIR/lib/common.sh"
+source "$_RUN_AGENT_SCRIPT_DIR/lib/common.sh"
+# shellcheck source=lib/credentials.sh
+source "$_RUN_AGENT_SCRIPT_DIR/lib/credentials.sh"
+# shellcheck source=agent-dispatcher.sh
+source "$_RUN_AGENT_SCRIPT_DIR/agent-dispatcher.sh"
 
 runtime_temp="${RUNNER_TEMP:-/tmp}"
 TASK_FILE="${TASK_FILE:-$runtime_temp/task.json}"
 PROMPT_FILE="${PROMPT_FILE:-$runtime_temp/agent-prompt.txt}"
 AGENT_LOG="${AGENT_LOG:-$runtime_temp/agent.log}"
 
-# A trusted outer executor explicitly enables this mode for the isolated
-# review-repair container. A stale prompt file must never alter ordinary agent
-# dispatch behavior.
+# API-backed hosted runs must not reuse a runner user's CLI configuration. The
+# isolated container supplies its own /home/agent and does not set AGENT_HOME.
+if [ -n "${AGENT_HOME:-}" ]; then
+  mkdir -p "$AGENT_HOME" || fail_with "$CAT_AGENT_START" "could not create isolated agent home"
+  HOME="$AGENT_HOME"
+  export HOME
+fi
+
+# --- resolve agent ---
+# A prebuilt prompt in the isolated container intentionally has no task file.
+# The trusted outer wrapper passes the normalized agent explicitly in that
+# case; direct prebuilt callers default to OpenCode. A real task file always
+# remains authoritative, so an unknown task agent still fails closed.
+agent="${AGENT:-opencode}"
+if [ -f "$TASK_FILE" ]; then
+  agent="$(agent_from_task "$TASK_FILE")"
+fi
+profile=""
 if [ "${AGENT_USE_PREBUILT_PROMPT:-false}" = "true" ]; then
   [ -s "$PROMPT_FILE" ] || fail_with "$CAT_AGENT_START" "trusted prebuilt prompt is missing"
   model="${AGENT_MODEL:-${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}}"
   max_runtime="${AGENT_MAX_RUNTIME:-10}"
+  agent_load_adapter "$agent"
+  if ! profile="$(resolve_credential_profile "$agent")"; then
+    exit 1
+  fi
 else
   # --- build the prompt (with injected target identity) ---
-  prompt_builder="$SCRIPT_DIR/build-agent-prompt.sh"
+  prompt_builder="$_RUN_AGENT_SCRIPT_DIR/build-agent-prompt.sh"
   if [ "$(jq -r '.mode // "issue_dispatch"' "$TASK_FILE")" = "review_repair" ]; then
-    prompt_builder="$SCRIPT_DIR/build-review-prompt.sh"
+    prompt_builder="$_RUN_AGENT_SCRIPT_DIR/build-review-prompt.sh"
   fi
   "$prompt_builder" || fail_with "$CAT_AGENT_START" "prompt build failed"
   model="$(jq -r '.requested_model // ""' "$TASK_FILE")"
   [ -z "$model" ] && model="${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
   max_runtime="$(jq -r '.max_runtime // ""' "$TASK_FILE")"
   [ -z "$max_runtime" ] && max_runtime="${AGENT_MAX_RUNTIME:-10}"
+  agent_load_adapter "$agent"
+  agent_validate_and_prepare "$agent" || exit $?
+  profile="$AGENT_VALIDATED_PROFILE"
 fi
+[ -n "$profile" ] || {
+  if ! profile="$(resolve_credential_profile "$agent")"; then
+    exit 1
+  fi
+}
 max_attempts="${AGENT_MAX_ATTEMPTS:-2}"
 
-# --- ensure opencode is available ---
-if ! command -v opencode >/dev/null 2>&1; then
-  if [ "${AGENT_AUTO_INSTALL:-true}" != "true" ]; then
-    fail_with "$CAT_AGENT_START" "opencode is not preinstalled on the self-hosted executor"
+assert_execution_profile_supported "$profile"
+credential_var="$(profile_env_var "$profile")"
+credential_value=""
+if [ -n "$credential_var" ]; then
+  if [ -n "${AGENT_CREDENTIAL_VALUE:-}" ]; then
+    credential_value="$AGENT_CREDENTIAL_VALUE"
+  else
+    credential_value="${!credential_var:-}"
   fi
-  log_info "opencode not found; installing opencode-ai (this can take a while)..."
-  npm install -g opencode-ai >/dev/null 2>&1 || fail_with "$CAT_AGENT_START" "npm install opencode-ai failed"
+  assert_credential_available "$profile" "$credential_value"
 fi
-log_info "opencode version: $(opencode --version 2>&1 | head -1)"
+
+# --- ensure agent is available ---
+agent_check_available || fail_with "$CAT_AGENT_UNAVAILABLE" "agent=$agent CLI is not available"
+log_info "agent=$agent version=$(agent_get_version "$credential_var" "$credential_value")"
 
 # --- read prompt once; single quoted arg = injection-safe ---
 PROMPT="$(<"$PROMPT_FILE")"
-
-run_once() {
-  local out="$AGENT_LOG"
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "${max_runtime}m" env OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" \
-      opencode run --print-logs -m "$model" "$PROMPT" >"$out" 2>&1
-  else
-    env OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}" \
-      opencode run --print-logs -m "$model" "$PROMPT" >"$out" 2>&1
-  fi
-  return $?
-}
-
-is_transient() { # <logfile> -> 0 if the failure looks like a transient API error
-  grep -qiE '429|rate.?limit|ECONNRESET|ETIMEDOUT|fetch failed|5[0-9]{2}|server error|temporarily' "$1" 2>/dev/null
-}
 
 attempt=1
 status=0
 agent_started_epoch="$(date +%s)"
 while :; do
-  log_info "agent attempt $attempt/$max_attempts (model=$model, max_runtime=${max_runtime}m)"
-  run_once
+  log_info "agent=$agent attempt $attempt/$max_attempts (model=$model, max_runtime=${max_runtime}m)"
+  agent_run "$model" "$PROMPT" "$AGENT_LOG" "$max_runtime" "$credential_var" "$credential_value"
   status=$?
 
   if [ "$status" -eq 0 ]; then
@@ -82,9 +109,9 @@ while :; do
     tail -n 40 "$AGENT_LOG" >&2
     break
   fi
-  if [ "$attempt" -ge "$max_attempts" ] || ! is_transient "$AGENT_LOG"; then
+  if [ "$attempt" -ge "$max_attempts" ] || ! is_transient_agent_error "$AGENT_LOG"; then
     set_failure "$CAT_MODEL_API"
-    log_error "FAILURE_CATEGORY=$CAT_MODEL_API opencode exited $status (attempt $attempt)"
+    log_error "FAILURE_CATEGORY=$CAT_MODEL_API agent=$agent exited $status (attempt $attempt)"
     tail -n 40 "$AGENT_LOG" >&2
     break
   fi
@@ -96,6 +123,7 @@ agent_runtime_seconds=$((agent_finished_epoch - agent_started_epoch))
 
 echo "model=$model" >> "${GITHUB_OUTPUT:-/dev/null}"
 echo "runtime_seconds=$agent_runtime_seconds" >> "${GITHUB_OUTPUT:-/dev/null}"
+summary "| agent | $agent |"
 summary "| model | \`$model\` |"
 summary "| max runtime | ${max_runtime}m |"
 summary "| attempts | $attempt |"

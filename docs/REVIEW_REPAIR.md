@@ -126,15 +126,17 @@ git, GitHub CLI, `jq`, and a GNU `timeout`-compatible command. The executor
 builds trusted images from the dispatcher default-branch checkout, then runs
 OpenCode and repository `npm test` in a disposable container. The agent sees
 only a `.git`-free copy of the validated target worktree, an immutable prompt,
-and `OPENROUTER_API_KEY`. It does not receive the host HOME, SSH keys,
-gh/Codex/OpenCode configuration, GitHub/App tokens, the Docker socket, or any
-other repository. The agent container is non-root, has a read-only root,
-temporary HOME/tmp, all Linux capabilities dropped, and no direct external
-route. A separate proxy is the sole egress path and permits HTTPS CONNECT only
-to `openrouter.ai`; the outer executor imports only a checked patch and does
-not run target tests or hooks. The API key is unset before repository tests run,
-and the container's prompt/log paths are temporary and not uploaded as
-artifacts. Target checkout does not persist credentials,
+and `OPENROUTER_API_KEY`; the review-repair path remains OpenCode-only. It does
+not receive the host HOME, SSH keys, gh/Codex/OpenCode/Claude configuration,
+GitHub/App tokens, the Docker socket, or any other repository. The agent
+container is non-root, has a read-only root, temporary HOME/tmp, all Linux
+capabilities dropped, and no direct external route. A separate proxy is the
+sole egress path and permits HTTPS CONNECT only to the provider API allowlist;
+review repair has no OpenAI or Anthropic credential and cannot select those
+adapters. The outer executor imports only a checked patch and does not run
+target tests or hooks. The API key is unset before repository tests run, and
+the container's prompt/log paths are temporary and not uploaded as artifacts.
+Target checkout does not persist credentials,
 and the target-scoped token is used only for authenticated validated remote
 reads and the final non-force push.
 

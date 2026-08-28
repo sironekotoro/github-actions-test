@@ -47,6 +47,15 @@ function normalizeRunnerMode(value) {
   die("runner_mode must be github or self-hosted");
 }
 
+function normalizeAgent(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return "opencode";
+  const agent = String(value).trim().toLowerCase();
+  if (!["opencode", "codex", "claude-code"].includes(agent)) {
+    die("agent must be opencode, codex, or claude-code");
+  }
+  return agent;
+}
+
 function normalize(raw, source) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) die("payload must be a JSON object");
   for (const field of REQUIRED) {
@@ -66,6 +75,7 @@ function normalize(raw, source) {
     max_runtime: raw.max_runtime ? String(raw.max_runtime) : "",
     dry_run: normalizeBoolean(raw.dry_run),
     runner_mode: normalizeRunnerMode(raw.runner_mode),
+    agent: normalizeAgent(raw.agent),
   };
 }
 
@@ -104,10 +114,11 @@ function main() {
       `max_runtime=${payload.max_runtime}`,
       `dry_run=${payload.dry_run}`,
       `runner_mode=${payload.runner_mode}`,
+      `agent=${payload.agent}`,
     ];
     fs.appendFileSync(outFile, "\n" + lines.join("\n") + "\n");
   }
-  process.stdout.write(`task_id=${payload.task_id} target_repository=${payload.target_repository} source=${payload.source} dry_run=${payload.dry_run} runner_mode=${payload.runner_mode}\n`);
+  process.stdout.write(`task_id=${payload.task_id} target_repository=${payload.target_repository} source=${payload.source} dry_run=${payload.dry_run} runner_mode=${payload.runner_mode} agent=${payload.agent}\n`);
 }
 
 main();

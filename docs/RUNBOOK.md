@@ -143,11 +143,13 @@ Docker containerへ渡してはいけません。
 review-repair executor runnerにはDocker daemonとnon-root runner userのDocker利用権限が
 必要です。Dockerまたはtrusted image buildが使えない場合は、agentをhost上で実行せず
 `AGENT_START_FAILED`で停止します。agentとrepository testsは`.git`なしのtarget作業コピー
-だけをmountした使い捨てcontainerで実行され、host HOME、SSH、`gh`/Codex/OpenCode
-credentials、GitHub/App token、Docker socketはcontainerへ渡しません。agent networkは
-internalで、OpenRouter HTTPSだけを許可する別proxy経由で通信します。
-`OPENROUTER_API_KEY` はagent実行時だけcontainer内に存在し、repository test実行前に
-unsetされます。agent log/promptはhostのartifactやPR feedbackへ渡しません。
+だけをmountした使い捨てcontainerで実行され、host HOME、SSH、`gh`/Codex/OpenCode/
+Claude credentials、GitHub/App token、Docker socketはcontainerへ渡しません。agent
+networkはinternalで、OpenRouter / OpenAI / Anthropic API HTTPSだけを許可する別proxy
+経由で通信します。選択した一つのAPI credentialだけがagent実行時にcontainer内の
+対応variableとして存在し、repository test実行前にunsetされます。subscription profile
+は安全なhandoffが実装されるまで `AGENT_AUTH_FAILED` で実行前に停止します。agent
+log/promptはhostのartifactやPR feedbackへ渡しません。
 
 ## Review repair failure categories
 

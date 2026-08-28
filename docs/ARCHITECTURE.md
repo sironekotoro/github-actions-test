@@ -23,7 +23,7 @@ same: guard-repo.sh       cross: target-scoped App token + target checkout + gua
   ↓
 prepare-branch.sh         dirty tree / strict duplicate 検査 → agent/<task_id>
   ↓
-run-agent.sh              opencode run (OpenRouter, bounded runtime, bounded retry)
+run-agent.sh              selected adapter (bounded runtime, bounded retry)
   ↓
 classify-workflow-push.sh actual post-agent diff + identity/branch/base validation
   ↓
@@ -38,6 +38,44 @@ post-feedback.sh          Issue コメント + Step summary
 `REVIEW_REPAIR_RUNNER_LABELS` JSON をそのまま使う（現状は専用 Mac）。OpenCode と
 untrusted repository tests は review-repair と同じ隔離 container で実行し、外側だけが
 validated patch を import して既存の commit/push/PR logic を実行する。
+
+## Agent and credential matrix
+
+`agent` and `runner_mode` are independent task fields. The dispatcher selects
+an adapter by `agent`; no workflow step contains provider-specific execution
+logic beyond selecting one credential value. The supported API-backed matrix
+is:
+
+| agent | profile | exact invocation | credential visible to the CLI |
+|---|---|---|---|
+| `opencode` | `openrouter` | `opencode run --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` |
+| `codex` | `openai-api` | `codex exec "$prompt"` | `OPENAI_API_KEY` |
+| `claude-code` | `anthropic-api` | `claude -p "$prompt"` | `ANTHROPIC_API_KEY` |
+
+The Codex and Claude adapters deliberately use their documented
+noninteractive forms: `codex exec` and `claude -p`. The model input remains an
+OpenRouter-compatible override for the default OpenCode path; Codex and Claude
+use their CLI defaults until provider-specific model validation is added.
+
+The workflow resolves the selected secret into one generic
+`AGENT_CREDENTIAL_VALUE`. `run-agent.sh` then passes only the selected variable
+through `env -i`; unrelated API keys, `GH_TOKEN`/`GITHUB_TOKEN`, host CLI
+configuration, and arbitrary inherited variables are absent from the agent
+process. Repository tests run after the agent with all API variables and the
+generic value unset. No `env $string command` construction is used.
+
+`chatgpt-subscription` and `claude-subscription` remain represented in the
+compatibility matrix for a future safe implementation, but fail closed with
+`AGENT_AUTH_FAILED` before container or CLI execution. There is no host-auth
+fallback. Enabling those profiles requires trusted-host identity, a
+temporary per-job credential handoff into the selected container, and cleanup.
+
+The trusted self-hosted image pins `opencode-ai@1.18.16`,
+`@openai/codex@0.147.0`, and `@anthropic-ai/claude-code@2.1.165`. The disposable
+agent network permits HTTPS CONNECT only to the three provider API domains
+needed by the API-backed matrix (`*.openrouter.ai`, `api.openai.com`, and
+`api.anthropic.com`). The image has all three CLIs, but runtime execution still
+requires the selected API credential and never installs a host fallback.
 
 ## Review repair flow
 
@@ -97,8 +135,10 @@ permissions:
 
 ## Secrets
 
-`OPENROUTER_API_KEY` は repo secret（sironekotoro/github-actions-test）に登録。
-`run-agent.sh` の環境変数としてのみ注入し、ログ・summary には出力しない（Phase 7 / 33）。
+`OPENROUTER_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY` は repo secrets として
+必要な場合だけ登録する。agent step には選択された一つだけを
+`AGENT_CREDENTIAL_VALUE` として渡し、`run-agent.sh` が対応する CLI variable に
+変換する。値はログ・summary・prompt・artifactへ出力しない。
 
 ### Workflow-file publication credential boundary
 
@@ -189,7 +229,7 @@ it never sanitizes or rewrites them.
 
 - Issue body / prompt を shell へ直接展開しない。
 - `parse-task.mjs` が JSON を解析し `task.json` に保存。
-- `run-agent.sh` は prompt をファイルから `PROMPT="$(<file)"` で読み、**単一の quoted argument** として `opencode run ... "$PROMPT"` に渡す（Phase 31 / 32）。
+- `run-agent.sh` は prompt をファイルから `PROMPT="$(<file)"` で読み、adapterへ**単一の quoted argument**として渡す。CLI invocationは上記matrixに固定する。
 - prompt 本体はログに出力しない（bytes / sha256 / title のみ。Phase 18）。
 
 ## Duplicate guard
@@ -266,7 +306,7 @@ the default bound.
 
 ## Remaining risks
 
-- `opencode run` はモデル API に依存。モデル停止時は `MODEL_API_FAILED` になる。
+- API-backed agent は provider API に依存。モデル停止・API非ゼロ終了時は `MODEL_API_FAILED`、timeout時は `AGENT_TIMEOUT` になる。
 - GitHub-hosted runner の IP は可変（repo が public の場合、他者の workflow 利用は actor allowlist で防ぐ）。
 - Cross-repo review detection is polling, so repair start can lag by up to the
   schedule interval. It never broadens the App token to multiple target repos.
