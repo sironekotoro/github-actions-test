@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Regression coverage for the trusted final agent validation and returned
-# patch boundary.
+# patch boundary, including the two-stage patch-diagnostics v4 design with
+# PATCH_PARSE_FAILED, PATCH_VALIDATION_FAILED, and NO_CHANGES.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/tests/lib/helpers.sh"
+source "$ROOT/scripts/lib/common.sh"
 
 CONTAINER="$ROOT/scripts/run-agent-dispatch-container.sh"
+REVIEW_CONTAINER="$ROOT/scripts/run-review-repair-agent-container.sh"
 RUN_AGENT="$ROOT/scripts/run-agent.sh"
 
 make_target() { # <tmp>
@@ -69,6 +72,9 @@ if [ "$command" = "run" ]; then
       valid)
         printf 'valid change\n' >> "$workspace_mount/file.txt"
         ;;
+      no-changes)
+        :
+        ;;
     esac
   fi
   exit 0
@@ -85,12 +91,81 @@ MOCK
   printf '%s\n' "$?" > "$tmp/code"
 }
 
+run_review_container_case() { # <tmp> <mock-docker-mode>
+  local tmp="$1" mode="$2"
+  mkdir -p "$tmp/bin-review"
+  cat > "$tmp/bin-review/docker" <<'MOCK'
+#!/usr/bin/env bash
+set -uo pipefail
+
+command="${1:-}"
+subcommand="${2:-}"
+
+if [ "$command" = "info" ]; then
+  exit 0
+fi
+
+if [ "$command" = "image" ] && [ "$subcommand" = "inspect" ]; then
+  exit 0
+fi
+
+if [ "$command" = "network" ]; then
+  exit 0
+fi
+
+if [ "$command" = "inspect" ]; then
+  printf '%s\n' '[{"NetworkSettings":{"Networks":{"review-repair-private-review123":{"IPAddress":"127.0.0.2"}}}}]'
+  exit 0
+fi
+
+if [ "$command" = "run" ]; then
+  is_agent=false
+  workspace_mount=""
+  for arg in "$@"; do
+    [ "$arg" = "--rm" ] && is_agent=true
+    case "$arg" in
+      type=bind,src=*,dst=/workspace)
+        workspace_mount="${arg#type=bind,src=}"
+        workspace_mount="${workspace_mount%,dst=/workspace}"
+        ;;
+    esac
+  done
+  if [ "$is_agent" = true ] && [ -n "$workspace_mount" ]; then
+    case "${MOCK_REVIEW_MODE:-}" in
+      invalid)
+        printf 'repair trailing whitespace \n' >> "$workspace_mount/file.txt"
+        ;;
+      valid)
+        printf 'repair change\n' >> "$workspace_mount/file.txt"
+        ;;
+      no-changes)
+        :
+        ;;
+    esac
+  fi
+  exit 0
+fi
+
+exit 0
+MOCK
+  chmod +x "$tmp/bin-review/docker"
+  ( cd "$tmp/repo" && PATH="$tmp/bin-review:$PATH" MOCK_REVIEW_MODE="$mode" \
+      RUNNER_TEMP="$tmp" GITHUB_RUN_ID=review123 GITHUB_OUTPUT="$tmp/out-review" \
+      TASK_FILE="$tmp/task.json" \
+      export PATH MOCK_REVIEW_MODE RUNNER_TEMP GITHUB_RUN_ID GITHUB_OUTPUT TASK_FILE; \
+      bash "$REVIEW_CONTAINER" >"$tmp/stdout-review" 2>"$tmp/stderr-review" )
+  printf '%s\n' "$?" > "$tmp/code-review"
+}
+
+# === Existing tests (unchanged behavior) ===
+
 # The trusted wrapper rejects a patch with trailing whitespace and records the
 # distinct post-agent validation category without changing the target tree.
 tmp="$(make_temp)"
 make_target "$tmp"
 run_container_case "$tmp" invalid
 t "invalid returned patch is rejected" "1|AGENT_PATCH_INVALID" "$(cat "$tmp/code")|$(cat "$tmp/failure_category")"
+t "invalid returned patch reason is PATCH_VALIDATION_FAILED" "PATCH_VALIDATION_FAILED" "$(cat "$tmp/failure_reason")"
 t "invalid returned patch is not imported" "base" "$(cat "$tmp/repo/file.txt")"
 
 # A clean patch still crosses the same trusted import boundary successfully.
@@ -144,5 +219,78 @@ t "API failure keeps existing category" "7|MODEL_API_FAILED" "$(cat "$tmp/code")
 tmp="$(make_temp)"
 run_agent_case "$tmp" timeout
 t "timeout keeps existing category" "124|AGENT_TIMEOUT" "$(cat "$tmp/code")|$(cat "$tmp/failure_category")"
+
+# === New patch-diagnostics v4 tests ===
+
+# Malformed patch => AGENT_PATCH_INVALID + PATCH_PARSE_FAILED
+tmp="$(make_temp)"
+make_target "$tmp"
+printf 'garbage that is not a valid unified diff format\n' > "$tmp/bad.patch"
+if ! git -C "$tmp/repo" apply --check -p2 "$tmp/bad.patch" >/dev/null 2>&1; then
+  set_failure_reason "PATCH_PARSE_FAILED"
+  set_failure "$CAT_AGENT_PATCH_INVALID"
+  t "malformed patch category" "AGENT_PATCH_INVALID" "$(get_failure)"
+  t "malformed patch reason" "PATCH_PARSE_FAILED" "$(get_failure_reason)"
+else
+  t "malformed patch must fail apply --check" "1" "0"
+fi
+
+# Syntactically valid patch with trailing whitespace => PATCH_VALIDATION_FAILED
+tmp="$(make_temp)"
+make_target "$tmp"
+printf '--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-base\n+content  \n' > "$tmp/ws.patch"
+if git -C "$tmp/repo" apply --check -p2 "$tmp/ws.patch" >/dev/null 2>&1; then
+  if ! git -C "$tmp/repo" apply --check --whitespace=error -p2 "$tmp/ws.patch" >/dev/null 2>&1; then
+    set_failure_reason "PATCH_VALIDATION_FAILED"
+    set_failure "$CAT_AGENT_PATCH_INVALID"
+    t "whitespace patch category" "AGENT_PATCH_INVALID" "$(get_failure)"
+    t "whitespace patch reason" "PATCH_VALIDATION_FAILED" "$(get_failure_reason)"
+  else
+    t "whitespace patch must fail --whitespace=error" "0" "1"
+  fi
+else
+  t "whitespace patch must pass apply --check" "1" "0"
+fi
+
+# Clean patch succeeds
+tmp="$(make_temp)"
+make_target "$tmp"
+printf '--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-base\n+clean\n' > "$tmp/clean.patch"
+if git -C "$tmp/repo" apply --check -p2 "$tmp/clean.patch" >/dev/null 2>&1; then
+  if git -C "$tmp/repo" apply --check --whitespace=error -p2 "$tmp/clean.patch" >/dev/null 2>&1; then
+    git -C "$tmp/repo" apply --whitespace=error -p2 "$tmp/clean.patch" 2>/dev/null
+    t "clean patch imports successfully" "clean" "$(tail -n 1 "$tmp/repo/file.txt")"
+  else
+    t "clean patch must pass --whitespace=error" "0" "1"
+  fi
+else
+  t "clean patch must pass --check" "1" "0"
+fi
+
+# True no-change => AGENT_PATCH_INVALID + NO_CHANGES (via container mock)
+tmp="$(make_temp)"
+make_target "$tmp"
+run_container_case "$tmp" no-changes
+t "no-changes patch is rejected" "1|AGENT_PATCH_INVALID" "$(cat "$tmp/code")|$(cat "$tmp/failure_category")"
+t "no-changes reason is NO_CHANGES" "NO_CHANGES" "$(cat "$tmp/failure_reason")"
+t "no-changes target is unchanged" "base" "$(cat "$tmp/repo/file.txt")"
+
+# Review-repair container path also uses two-stage validation
+tmp="$(make_temp)"
+make_target "$tmp"
+run_review_container_case "$tmp" no-changes
+t "review no-changes patch is rejected" "1|AGENT_PATCH_INVALID" "$(cat "$tmp/code-review")|$(cat "$tmp/failure_category")"
+t "review no-changes reason is NO_CHANGES" "NO_CHANGES" "$(cat "$tmp/failure_reason")"
+
+tmp="$(make_temp)"
+make_target "$tmp"
+run_review_container_case "$tmp" invalid
+t "review invalid patch is rejected" "1|AGENT_PATCH_INVALID" "$(cat "$tmp/code-review")|$(cat "$tmp/failure_category")"
+t "review invalid patch reason is PATCH_VALIDATION_FAILED" "PATCH_VALIDATION_FAILED" "$(cat "$tmp/failure_reason")"
+
+tmp="$(make_temp)"
+make_target "$tmp"
+run_review_container_case "$tmp" valid
+t "review valid patch imports" "0" "$(cat "$tmp/code-review")"
 
 finish

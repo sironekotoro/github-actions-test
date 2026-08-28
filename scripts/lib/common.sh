@@ -11,8 +11,12 @@ set -uo pipefail
 FAILURE_FILE="${RUNNER_TEMP:-/tmp}/failure_category"
 SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-/tmp/agent_step_summary.md}"
 
+FAILURE_REASON_FILE="${RUNNER_TEMP:-/tmp}/failure_reason"
+
 mkdir -p "$(dirname "$FAILURE_FILE")"
 [ -f "$FAILURE_FILE" ] || : > "$FAILURE_FILE"
+mkdir -p "$(dirname "$FAILURE_REASON_FILE")"
+[ -f "$FAILURE_REASON_FILE" ] || : > "$FAILURE_REASON_FILE"
 mkdir -p "$(dirname "$SUMMARY_FILE")"
 [ -f "$SUMMARY_FILE" ] || : > "$SUMMARY_FILE"
 
@@ -68,6 +72,9 @@ log_error() { printf '[ERROR] %s\n' "$*" >&2; }
 
 set_failure() { printf '%s\n' "$1" > "$FAILURE_FILE"; }
 get_failure() { cat "$FAILURE_FILE" 2>/dev/null || echo UNKNOWN; }
+
+set_failure_reason() { printf '%s\n' "$1" > "$FAILURE_REASON_FILE"; }
+get_failure_reason() { cat "$FAILURE_REASON_FILE" 2>/dev/null || echo ""; }
 
 fail_with() {
   local category="$1"; shift

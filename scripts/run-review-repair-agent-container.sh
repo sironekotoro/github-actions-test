@@ -145,10 +145,22 @@ set -e
 [ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ] \
   || fail_with "$CAT_AGENT_START" "could not create repair patch from isolated workspace"
 
-# -p2 strips the controlled base/workspace prefix. git apply validates paths
-# against the validated repository and does not execute repository code.
-git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" \
-  || fail_with "$CAT_AGENT_PATCH_INVALID" "isolated repair patch failed validation"
+# Two-stage patch validation: first syntactic, then whitespace.
+if [ ! -s "$patch_file" ]; then
+  set_failure_reason "NO_CHANGES"
+  fail_with "$CAT_AGENT_PATCH_INVALID" "no changes in isolated repair workspace"
+fi
+
+if ! git -C "$target_dir" apply --check -p2 "$patch_file" >/dev/null 2>&1; then
+  set_failure_reason "PATCH_PARSE_FAILED"
+  fail_with "$CAT_AGENT_PATCH_INVALID" "isolated repair patch failed syntactic validation"
+fi
+
+if ! git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" >/dev/null 2>&1; then
+  set_failure_reason "PATCH_VALIDATION_FAILED"
+  fail_with "$CAT_AGENT_PATCH_INVALID" "isolated repair patch failed whitespace validation"
+fi
+
 git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" \
   || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import isolated repair patch"
 
