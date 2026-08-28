@@ -21,5 +21,6 @@ finish() {
 }
 
 make_temp() {
-  mktemp -d "${TMPDIR:-/tmp}/agent-tests.XXXXXX"
+  mkdir -p /workspace/.test-tmp
+  mktemp -d "/workspace/.test-tmp/agent-tests.XXXXXX"
 }

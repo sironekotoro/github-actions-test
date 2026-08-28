@@ -180,10 +180,46 @@ set +e
 ) > "$patch_file"
 diff_status=$?
 set -e
+
+# Map diff result to machine-readable failure reason under AGENT_PATCH_INVALID.
+# diff_status=0 means no differences → NO_CHANGES (still a valid result).
+if [ "$diff_status" -eq 0 ]; then
+  printf '%s\n' "NO_CHANGES" > "${RUNNER_TEMP:-/tmp}/failure_reason"
+  summary "| agent patch | no changes |"
+  echo "result=pass" >> "${GITHUB_OUTPUT:-/dev/null}"
+  exit 0
+fi
+
+# diff_status=1 with an empty patch file → EMPTY_PATCH (defensive).
+if [ "$diff_status" -eq 1 ] && [ ! -s "$patch_file" ]; then
+  set_failure "$CAT_AGENT_PATCH_INVALID"
+  printf '%s\n' "EMPTY_PATCH" > "${RUNNER_TEMP:-/tmp}/failure_reason"
+  log_error "FAILURE_REASON=EMPTY_PATCH isolated agent produced empty patch with diff_status=1"
+  exit 1
+fi
+
 [ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ] \
   || fail_with "$CAT_AGENT_START" "could not create agent patch from isolated workspace"
-git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" \
-  || fail_with "$CAT_AGENT_PATCH_INVALID" "isolated agent patch failed validation"
+
+# Two-stage validation: first basic parse, then whitespace strictness.
+#
+# Stage 1: basic structural check (catches malformed diffs).
+if ! git -C "$target_dir" apply --check -p2 "$patch_file" 2>/dev/null; then
+  set_failure "$CAT_AGENT_PATCH_INVALID"
+  printf '%s\n' "PATCH_PARSE_FAILED" > "${RUNNER_TEMP:-/tmp}/failure_reason"
+  log_error "FAILURE_REASON=PATCH_PARSE_FAILED isolated agent patch failed structural check"
+  exit 1
+fi
+
+# Stage 2: whitespace error check (trailing whitespace, etc.).
+if ! git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" 2>/dev/null; then
+  set_failure "$CAT_AGENT_PATCH_INVALID"
+  printf '%s\n' "PATCH_VALIDATION_FAILED" > "${RUNNER_TEMP:-/tmp}/failure_reason"
+  log_error "FAILURE_REASON=PATCH_VALIDATION_FAILED isolated agent patch failed whitespace validation"
+  exit 1
+fi
+
+# Trusted import: apply the validated patch.
 git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" \
   || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import isolated agent patch"
 
