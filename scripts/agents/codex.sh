@@ -2,7 +2,9 @@
 # Codex CLI agent adapter. CLI: `codex`.
 #
 # Codex supports two authentication modes:
-#   1. OpenAI API key (profile=openai-api) via OPENAI_API_KEY env var
+#   1. OpenAI API key (profile=openai-api). The repository secret is sourced
+#      as OPENAI_API_KEY, but pinned `codex exec` 0.147.0 consumes ephemeral
+#      headless API auth from CODEX_API_KEY.
 #   2. ChatGPT subscription (profile=chatgpt-subscription) via host-local auth
 #
 # Subscription mode is represented by the profile matrix but is rejected before
@@ -20,14 +22,27 @@ agent_check_available() {
 }
 
 agent_get_version() {
-  agent_exec_clean "${1:-}" "${2:-}" -- codex --version 2>&1 | head -1
+  # Version discovery needs no provider credential.
+  agent_exec_clean "" "" -- codex --version 2>&1 | head -1
 }
 
 agent_run() {
   local model="$1" prompt="$2" logfile="$3" max_runtime="$4"
   local credential_var="$5" credential_value="$6"
-  agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
+
+  # Keep the external profile/secret contract as openai-api/OPENAI_API_KEY, but
+  # translate only at the Codex process boundary. `codex exec` 0.147.0 enables
+  # CODEX_API_KEY as its ephemeral API-key auth source; passing OPENAI_API_KEY
+  # alone leaves the Responses request without an Authorization header.
+  [ "$credential_var" = "OPENAI_API_KEY" ] \
+    || fail_with "$CAT_AGENT_AUTH" "Codex openai-api profile resolved an unexpected credential variable"
+  agent_run_clean "CODEX_API_KEY" "$credential_value" "$max_runtime" "$logfile" -- \
     codex exec --skip-git-repo-check "$prompt"
+}
+
+is_auth_agent_error() {
+  local logfile="$1"
+  grep -qiE '401 Unauthorized|Missing bearer or basic authentication|invalid[_ -]?api[_ -]?key|incorrect API key|authentication (failed|required)' "$logfile" 2>/dev/null
 }
 
 is_transient_agent_error() {
