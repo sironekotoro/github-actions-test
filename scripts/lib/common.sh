@@ -115,6 +115,60 @@ agent_exec_clean() {
   env -i "${clean_env[@]}" "$@"
 }
 
+# apply_agent_patch <target_dir> <patch_file> <diff_status> [failure_reason_file]
+#
+# Trusted shared entry point for validating and importing an untrusted agent
+# patch.  Called identically by both ordinary Agent Dispatch and review-repair
+# after their isolated containers produce a checked patch.
+#
+# Stages (all stderr suppressed to avoid leaking patch/path/context details):
+#   1. diff_status == 0  -> NO_CHANGES
+#   2. empty patch file   -> EMPTY_PATCH
+#   3. git apply --check -p2                    -> PATCH_PARSE_FAILED
+#   4. git apply --check --whitespace=error -p2 -> PATCH_VALIDATION_FAILED
+#   5. git apply --whitespace=error -p2         -> PATCH_VALIDATION_FAILED
+#
+# On any failure, writes FAILURE_CATEGORY=AGENT_PATCH_INVALID (via set_failure)
+# and a durable machine-readable FAILURE_REASON to the reason file.  The caller
+# does not need to handle these individually.
+apply_agent_patch() {
+  local target_dir="$1" patch_file="$2" diff_status="$3"
+  local reason_file="${4:-${RUNNER_TEMP:-/tmp}/failure_reason}"
+
+  mkdir -p "$(dirname "$reason_file")"
+  : > "$reason_file"
+
+  # NO_CHANGES -- caller's git diff exited 0 (identical trees)
+  if [ "$diff_status" -eq 0 ]; then
+    printf '%s\n' "NO_CHANGES" > "$reason_file"
+    fail_with "$CAT_AGENT_PATCH_INVALID" "agent patch validation failed"
+  fi
+
+  # EMPTY_PATCH -- patch file is missing or zero-length
+  if [ ! -s "$patch_file" ]; then
+    printf '%s\n' "EMPTY_PATCH" > "$reason_file"
+    fail_with "$CAT_AGENT_PATCH_INVALID" "agent patch validation failed"
+  fi
+
+  # Baseline parse check
+  if ! git -C "$target_dir" apply --check -p2 "$patch_file" 2>/dev/null; then
+    printf '%s\n' "PATCH_PARSE_FAILED" > "$reason_file"
+    fail_with "$CAT_AGENT_PATCH_INVALID" "agent patch validation failed"
+  fi
+
+  # Strict whitespace check
+  if ! git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" 2>/dev/null; then
+    printf '%s\n' "PATCH_VALIDATION_FAILED" > "$reason_file"
+    fail_with "$CAT_AGENT_PATCH_INVALID" "agent patch validation failed"
+  fi
+
+  # Final import -- must also fail closed through the same classification path
+  if ! git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" 2>/dev/null; then
+    printf '%s\n' "PATCH_VALIDATION_FAILED" > "$reason_file"
+    fail_with "$CAT_AGENT_PATCH_INVALID" "agent patch validation failed"
+  fi
+}
+
 # agent_run_clean <credential-var> <credential-value> <minutes> <logfile> -- <command...>
 agent_run_clean() {
   local credential_var="$1" credential_value="$2" max_runtime="$3" logfile="$4"
