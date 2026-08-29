@@ -68,7 +68,8 @@ prompt_file="$prompt_dir/agent-prompt.txt"
 mkdir -p "$base_dir" "$workspace_dir" "$prompt_dir"
 
 # The agent sees a disposable source copy, never the checkout or its .git
-# metadata. The base copy stays outside the container for patch construction.
+# metadata. The .git-free base is mounted read-only for validation and remains
+# the trusted outer executor's source for patch construction.
 tar -C "$target_dir" --exclude=.git -cf - . | tar -C "$base_dir" -xf - \
   || fail_with "$CAT_AGENT_START" "could not stage target for isolated agent"
 tar -C "$base_dir" -cf - . | tar -C "$workspace_dir" -xf - \
@@ -93,6 +94,7 @@ docker run --rm --init \
   --pids-limit="${REVIEW_REPAIR_CONTAINER_PIDS_LIMIT:-512}" \
   --memory="${REVIEW_REPAIR_CONTAINER_MEMORY:-4g}" \
   --mount "type=bind,src=$workspace_dir,dst=/workspace" \
+  --mount "type=bind,src=$base_dir,dst=/baseline,readonly" \
   --mount "type=bind,src=$prompt_file,dst=/runtime/agent-prompt.txt,readonly" \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,mode=1777,size=1g \
   --tmpfs /home/agent:rw,nosuid,nodev,noexec,mode=1777,size=512m \

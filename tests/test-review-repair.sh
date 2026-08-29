@@ -186,11 +186,28 @@ rules_line="$(grep -n 'Do not create a branch' "$tmp/prompt" | cut -d: -f1)"
 feedback_line="$(grep -n '<UNTRUSTED_REVIEW_FEEDBACK' "$tmp/prompt" | cut -d: -f1)"
 t "authoritative rules precede untrusted review" "yes" "$([ "$rules_line" -lt "$feedback_line" ] && echo yes || echo no)"
 mandatory_line="$(grep -n 'MANDATORY FINAL VALIDATION' "$tmp/prompt" | cut -d: -f1)"
-t "review prompt requires git status --short" "yes" "$(grep -q 'git status --short' "$tmp/prompt" && echo yes || echo no)"
-t "review prompt requires git diff --check" "yes" "$(grep -q 'git diff --check' "$tmp/prompt" && echo yes || echo no)"
-t "review prompt requires whitespace repair" "yes" "$(grep -q 'Fix all whitespace errors' "$tmp/prompt" && grep -q 'rerun git diff --check until it exits successfully' "$tmp/prompt" && echo yes || echo no)"
+t "review prompt identifies editable workspace and trusted baseline" "yes" "$(grep -q 'editable source is /workspace' "$tmp/prompt" && grep -q 'read-only trusted baseline is mounted at /baseline' "$tmp/prompt" && echo yes || echo no)"
+t "review prompt forbids git identity checks without metadata" "yes" "$(grep -q 'git remote, git branch, or git status for identity checks' "$tmp/prompt" && echo yes || echo no)"
+t "review prompt requires baseline whitespace validation" "yes" "$(grep -Fq 'git diff --no-index --check /baseline /workspace || [ "$?" -eq 1 ]' "$tmp/prompt" && echo yes || echo no)"
+t "review prompt documents validation statuses" "yes" "$(grep -q 'Exit 0 means no differences; exit 1 means clean differences and is acceptable' "$tmp/prompt" && grep -q 'Any other exit status is a validation failure' "$tmp/prompt" && echo yes || echo no)"
+t "review prompt requires whitespace repair" "yes" "$(grep -q 'Fix all whitespace errors' "$tmp/prompt" && grep -q 'rerun the baseline/workspace check until it succeeds' "$tmp/prompt" && echo yes || echo no)"
 t "review mandatory validation follows untrusted review" "yes" "$([ -n "$mandatory_line" ] && [ "$feedback_line" -lt "$mandatory_line" ] && echo yes || echo no)"
 rm -f /tmp/review-repair-pwned
+
+# The exact no-index command accepts an identical tree and a clean difference,
+# but propagates git's whitespace-error status as a failure.
+mkdir -p "$tmp/baseline" "$tmp/workspace"
+printf 'base\n' > "$tmp/baseline/file.txt"
+printf 'base\n' > "$tmp/workspace/file.txt"
+(git diff --no-index --check "$tmp/baseline" "$tmp/workspace" || [ "$?" -eq 1 ]) >/dev/null 2>&1
+t "review baseline validation accepts no changes" "0" "$?"
+printf 'changed\n' > "$tmp/workspace/file.txt"
+(git diff --no-index --check "$tmp/baseline" "$tmp/workspace" || [ "$?" -eq 1 ]) >/dev/null 2>&1
+t "review baseline validation accepts clean changes" "0" "$?"
+printf 'changed \n' > "$tmp/workspace/file.txt"
+(git diff --no-index --check "$tmp/baseline" "$tmp/workspace" || [ "$?" -eq 1 ]) >/dev/null 2>&1
+whitespace_status=$?
+t "review baseline validation rejects trailing whitespace" "nonzero" "$([ "$whitespace_status" -ne 0 ] && echo nonzero || echo zero)"
 
 # Resume an existing agent branch only when its head/base/hash all match.
 repo_tmp="$(make_temp)"
@@ -324,6 +341,8 @@ feature_gate_block="$(sed -n '/Re-check review repair kill switch/,/Record execu
 t "kill switch uses dedicated Variables-read credential" "yes" "$(printf '%s\n' "$feature_gate_block" | grep -q 'REVIEW_REPAIR_VARIABLES_TOKEN' && ! printf '%s\n' "$feature_gate_block" | grep -Eq '^[[:space:]]+GH_TOKEN:' && printf '%s\n' "$feature_gate_block" | grep -q 'X-GitHub-Api-Version' && echo yes || echo no)"
 t "executor builds and uses isolated repair images" "yes" "$(grep -q 'Build isolated review-repair images' "$EXECUTOR_WORKFLOW" && grep -q 'run-review-repair-agent-container.sh' "$EXECUTOR_WORKFLOW" && echo yes || echo no)"
 t "agent container is non-root and hardened" "yes" "$(grep -q -- '--user "\$runner_uid:\$runner_gid"' "$CONTAINER_AGENT" && grep -q -- '--read-only' "$CONTAINER_AGENT" && grep -q -- '--cap-drop=ALL' "$CONTAINER_AGENT" && grep -q -- '--security-opt=no-new-privileges' "$CONTAINER_AGENT" && echo yes || echo no)"
+t "agent mounts staged baseline read-only" "yes" "$(grep -q 'src=\$base_dir,dst=/baseline,readonly' "$CONTAINER_AGENT" && echo yes || echo no)"
+t "agent never mounts git metadata" "yes" "$(! grep -Eq 'src=\$target_dir/\.git|dst=/workspace/\.git|dst=/baseline/\.git' "$CONTAINER_AGENT" && echo yes || echo no)"
 t "agent sees no host Git credentials or Docker socket" "yes" "$(grep -q -- '--exclude=.git' "$CONTAINER_AGENT" && ! grep -Eq 'docker\.sock|GITHUB_TOKEN|GH_TOKEN|TARGET_GH_TOKEN|PUSH_TOKEN' "$CONTAINER_AGENT" && echo yes || echo no)"
 t "repository tests do not inherit the OpenRouter key" "yes" "$(grep -q 'unset OPENROUTER_API_KEY' "$CONTAINER_AGENT" && echo yes || echo no)"
 t "agent egress is internal and OpenRouter-only" "yes" "$(grep -q 'network create --internal' "$CONTAINER_AGENT" && grep -q -- '--network "\$private_network"' "$CONTAINER_AGENT" && grep -q -- '--user 31:31' "$CONTAINER_AGENT" && grep -q 'openrouter.ai' "$SQUID_CONFIG" && grep -q 'http_access deny all' "$SQUID_CONFIG" && echo yes || echo no)"
