@@ -83,6 +83,26 @@ code=$?
 t "diff_status=0 yields AGENT_PATCH_INVALID" "1|AGENT_PATCH_INVALID" "$code|$(get_failure)"
 t "diff_status=0 yields NO_CHANGES" "NO_CHANGES" "$(get_failure_reason)"
 
+# A successful no-op emits only a bounded, exact-literal-redacted agent tail.
+tmp="$(make_case)"
+make_repo "$tmp/repo"
+secret='selected-provider-secret-no-change'
+prompt='full trusted prompt must not be exposed'
+printf '%s' "$prompt" > "$tmp/prompt"
+{
+  for line in $(seq 1 45); do printf 'agent line %s\n' "$line"; done
+  printf 'credential=%s\n' "$secret"
+  printf 'prompt=%s\n' "$prompt"
+} > "$tmp/agent.log"
+reset_failures
+( apply_agent_patch "$tmp/repo" "$tmp/empty.patch" 0 "$tmp/agent.log" "$secret" "$tmp/prompt" ) >"$tmp/stdout" 2>"$tmp/stderr"
+code=$?
+t "no-change diagnostic remains patch failure" "1|AGENT_PATCH_INVALID|NO_CHANGES" "$code|$(get_failure)|$(get_failure_reason)"
+t "no-change diagnostic redacts selected credential" "absent" "$(grep -Fq "$secret" "$tmp/stderr" && echo present || echo absent)"
+t "no-change diagnostic has redaction marker" "present" "$(grep -Fq '[REDACTED_SELECTED_CREDENTIAL]' "$tmp/stderr" && echo present || echo absent)"
+t "no-change diagnostic redacts full prompt" "absent|present" "$(grep -Fq "$prompt" "$tmp/stderr" && echo present || echo absent)|$(grep -Fq '[REDACTED_AGENT_PROMPT]' "$tmp/stderr" && echo present || echo absent)"
+t "no-change diagnostic is bounded to tail" "absent" "$(grep -Eq '^agent line 1$' "$tmp/stderr" && echo present || echo absent)"
+
 # A missing or zero-byte patch with diff_status=1 is EMPTY_PATCH.
 tmp="$(make_case)"
 make_repo "$tmp/repo"
@@ -204,6 +224,7 @@ done
 # reintroduce their own git-apply or diff-status classification logic.
 t "ordinary dispatch uses shared patch helper" "yes" "$(grep -Fq 'apply_agent_patch "$target_dir" "$patch_file" "$diff_status"' "$CONTAINER" && echo yes || echo no)"
 t "review repair uses shared patch helper" "yes" "$(grep -Fq 'apply_agent_patch "$target_dir" "$patch_file" "$diff_status"' "$REVIEW_CONTAINER" && echo yes || echo no)"
+t "review repair preserves successful agent log for outer no-change diagnostics" "yes" "$(grep -Fq 'docker cp "$agent_name:/tmp/agent.log" "$agent_log"' "$REVIEW_CONTAINER" && grep -Fq 'apply_agent_patch "$target_dir" "$patch_file" "$diff_status" "$agent_log" "${OPENROUTER_API_KEY:-}" "$prompt_file"' "$REVIEW_CONTAINER" && echo yes || echo no)"
 t "ordinary wrapper has no direct git apply" "yes" "$(! grep -Fq 'git -C "$target_dir" apply' "$CONTAINER" && echo yes || echo no)"
 t "review wrapper has no direct git apply" "yes" "$(! grep -Fq 'git -C "$target_dir" apply' "$REVIEW_CONTAINER" && echo yes || echo no)"
 t "ordinary wrapper does not classify diff_status" "yes" "$(! grep -Fq '[ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ]' "$CONTAINER" && echo yes || echo no)"

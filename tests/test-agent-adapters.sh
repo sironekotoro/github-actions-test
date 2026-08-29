@@ -59,7 +59,10 @@ MOCK
   case "$expected_cli" in
     opencode)
       t "OpenCode uses run" run "$(sed -n '1p' "$tmp/argv")"
-      t "OpenCode uses print logs" --print-logs "$(sed -n '2p' "$tmp/argv")"
+      t "OpenCode auto-approves inside outer sandbox" --auto "$(sed -n '2p' "$tmp/argv")"
+      t "OpenCode selects writable build agent" --agent "$(sed -n '3p' "$tmp/argv")"
+      t "OpenCode build agent value" build "$(sed -n '4p' "$tmp/argv")"
+      t "OpenCode uses print logs" --print-logs "$(sed -n '5p' "$tmp/argv")"
       t "OpenCode receives one prompt argument" 'prompt with spaces; $HOME must stay literal' "$(tail -n 1 "$tmp/argv")"
       ;;
     codex)
