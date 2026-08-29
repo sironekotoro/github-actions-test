@@ -1,10 +1,11 @@
 # github-actions-test
 
-ChatGPT / Issue から投入したタスクを、GitHub Actions 経由で OpenCode（OpenRouter）を起動して処理する **中央 dispatch 基盤** の動作確認リポジトリ。
+ChatGPT / Issue から投入したタスクを、GitHub Actions と self-hosted runner 上の隔離 container 経由で coding agent に処理させる **中央 dispatch 基盤** の動作確認リポジトリ。
 
 ## 目的
 
 - **どの repository に対するタスクなのかを機械的に保証**し、wrong-repository execution を構造的に防ぐ。
+- 非 dry-run の coding agent は必ず `.git` / GitHub mutation credential / host HOME から隔離して実行する。
 - Issue / `workflow_dispatch` から投入したタスクが確実に agent job まで到達し、失敗時には failure category が明確に分かる。
 - GitHub App を使った **target-scoped / short-lived credential** により、許可済みの別 repository へ安全に dispatch できるようにする。
 
@@ -23,8 +24,11 @@ sironekotoro/github-actions-test
                   ↓ checkout ./target
                   ↓ verify target checkout identity
   ↓ dry-run OR prepare agent/<task_id>
-  ↓ selected coding agent (fresh session; adapter-controlled)
-  ↓ tests / commit / push / PR in target repo
+  ↓ .git-free /workspace + read-only /baseline
+  ↓ isolated Docker coding agent + repository tests
+  ↓ trusted outer patch validation/import
+  ↓ reject .github/workflows/** agent diffs
+  ↓ trusted commit / push / PR in target repo
   ↓ feedback to central Issue
 ```
 
@@ -38,7 +42,8 @@ authorized CHANGES_REQUESTED review
   ↓ asynchronously dispatch one executor request, then exit without waiting
   ↓ self-hosted executor: revalidate current metadata / bot / head SHA
   ↓ resume the existing agent/<task_id> branch
-  ↓ repair agent / tests / git diff --check / same-branch push
+  ↓ isolated repair agent / tests / checked patch import
+  ↓ trusted same-branch push
   ↓ record result; never create or merge another PR
 ```
 
@@ -59,19 +64,24 @@ Issue 本文は JSON payload（全体、`json` fenced block、または JSON 1 �
   "target_repository": "sironekotoro/github-actions-test",
   "title": "README を確認",
   "prompt": "README.md を読み、repository name を確認してください。",
+  "runner_mode": "self-hosted",
   "dry_run": false
 }
 ```
 
-Issue に `opencode-run` または `agent:ready` ラベルを付けると実行される。許可 actor 以外による起動は `UNAUTHORIZED_ACTOR` で停止する。
+`runner_mode` を省略した場合も `self-hosted` が既定。Issue に `opencode-run` または `agent:ready` ラベルを付けると実行される。許可 actor 以外による起動は `UNAUTHORIZED_ACTOR` で停止する。
 
-## workflow_dispatch
+## workflow_dispatch / runner policy
 
-Actions -> **Agent Dispatch** -> **Run workflow** から `target_repository` / `task_id` / `title` / `prompt` / `dry_run` を指定する。`runner_mode` は未指定または `github` なら従来どおり GitHub-hosted `ubuntu-latest` を使う。`self-hosted` は明示 opt-in の実験経路で、現在は `REVIEW_REPAIR_RUNNER_LABELS` に設定された Mac runner のみを選択する。
+Actions -> **Agent Dispatch** -> **Run workflow** から `target_repository` / `task_id` / `title` / `prompt` / `dry_run` を指定する。
 
-`runner_mode` は Issue の task JSON にも指定できる。受理値は `github` と `self-hosted` のみで、未知の値は agent を開始せず `INVALID_PAYLOAD` で停止する。self-hosted 経路では OpenCode と repository test を Docker の使い捨て・non-root・read-only container に閉じ込め、agent へは .git、host HOME、SSH、GitHub/App token、Docker socket を渡さない。commit / push / PR 作成だけは既存どおり trusted outer executor が行う。
+- `runner_mode=self-hosted`: 既定。coding agent を実行できる唯一の経路。
+- `runner_mode=github`: **dry-run 専用**。`dry_run=true` の場合だけ auth / checkout / identity / default branch / prompt build を検証する。
+- `runner_mode=github` + `dry_run=false`: `INVALID_PAYLOAD` で fail-closed。GitHub-hosted runner 上で coding agent を直接実行する経路はない。
 
-Cross-repoを初めて試す場合は `dry_run=true` を推奨する。dry-runでは auth / checkout / identity / default branch / prompt build まで検証し、agent / branch / commit / push / PR は実行しない。
+self-hosted 経路では coding agent と repository tests を Docker の使い捨て・non-root・read-only container に閉じ込め、agent へは target checkout の `.git`、host HOME、SSH、GitHub/App token、Docker socket を渡さない。agent は `/workspace` のみ編集でき、`/baseline` は read-only。trusted outer executor が filesystem diff を patch 化し、parse / applicability / whitespace validation を通した後だけ target checkout へ importする。
+
+Cross-repoを初めて試す場合は `runner_mode=github` + `dry_run=true` または `self-hosted` + `dry_run=true` を推奨する。dry-runでは agent / branch / commit / push / PR は実行しない。
 
 ## Repository authorization
 
@@ -83,35 +93,49 @@ Cross-repoを初めて試す場合は `dry_run=true` を推奨する。dry-run�
 
 Cross-repo path は `CROSS_REPO_ENABLED=true` の Actions variable と GitHub App secrets が揃うまで fail-closed。
 
-GitHub Appの最小権限・5分セットアップ手順は [docs/CROSS_REPO_DISPATCH.md](docs/CROSS_REPO_DISPATCH.md) を参照。
+GitHub Appの最小権限・セットアップ手順は [docs/CROSS_REPO_DISPATCH.md](docs/CROSS_REPO_DISPATCH.md) を参照。
 
 ## Agent / credential profiles
 
-`agent` と `runner_mode` は独立して選択できます。API-backed profiles の対応は次のとおりです。
+`agent` と `runner_mode` は独立した task fields だが、agent execution は self-hosted isolation 内だけで許可される。API-backed profiles の対応は次のとおり。
 
-| agent | profile | CLI | agent process に渡す credential |
-|---|---|---|---|
-| `opencode` | `openrouter` | `opencode run --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` |
-| `codex` | `openai-api` | `codex exec "$prompt"` | `OPENAI_API_KEY` |
-| `claude-code` | `anthropic-api` | `claude -p "$prompt"` | `ANTHROPIC_API_KEY` |
+| agent | profile | CLI | repository secret | runtime credential |
+|---|---|---|---|---|
+| `opencode` | `openrouter` | `opencode run --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY` |
+| `codex` | `openai-api` | `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "$prompt"` | `OPENAI_API_KEY` | `CODEX_API_KEY` |
+| `claude-code` | `anthropic-api` | `claude -p "$prompt"` | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY` |
 
-workflow は選択された秘密値だけを `AGENT_CREDENTIAL_VALUE` として渡し、
-`run-agent.sh` が `env -i` の clean environment 内で対応する名前へ変換します。
-他の API key、`GH_TOKEN` / `GITHUB_TOKEN`、host の CLI 認証状態は agent process に
-入りません。self-hosted image には pinned versions の3 CLIを含めます。
+workflow は選択された秘密値だけを `AGENT_CREDENTIAL_VALUE` として isolated wrapper へ渡し、`run-agent.sh` / adapter が `env -i` の clean environment 内で対応する runtime 名へ変換する。Codex 0.147.0 の headless API auth だけは source secret `OPENAI_API_KEY` を process boundary で `CODEX_API_KEY` に変換する。
 
-`chatgpt-subscription` と `claude-subscription` は将来の安全な credential handoff 用に
-profile として表現されていますが、現在は `AGENT_AUTH_FAILED` で実行前に fail-closed
-します。host の既存ログイン状態への fallback はありません。
+他の API key、`GH_TOKEN` / `GITHUB_TOKEN`、host の CLI 認証状態は agent process に入らない。self-hosted image には pinned versions の3 CLIを含める。
+
+`chatgpt-subscription` と `claude-subscription` は将来の安全な credential handoff 用に profile として表現されているが、現在は `AGENT_AUTH_FAILED` で実行前に fail-closedする。host の既存ログイン状態への fallback はない。
+
+## Workflow-file publication policy
+
+Agent Dispatch / Review Repair が生成した `.github/workflows/**` の変更は **自動 publish しない**。
+
+- same-repo: `WORKFLOW_PUSH_AUTH_NOT_CONFIGURED` で fail-closed
+- cross-repo: `CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED` で fail-closed
+- coding agent に workflow-write credential は渡さない
+- trusted outer layer にも agent-generated workflow を publish するための `permission-workflows: write` token route は存在しない
+
+workflow変更が必要な場合は、agentの自動PR経路とは分離して、人間または別のtrusted processで内容を確認してから適用する。
 
 ## 重要な安全策
 
 - target repository は task metadata + allowlist が正本。prompt本文から変更できない。
 - dispatcher checkout と target checkout を別々に identity guard する。
+- 非 dry-run agent execution は **self-hosted isolated Docker のみ**。
 - agent は **1 task = 1 fresh session**。
+- agentへ `.git` / host HOME / SSH / GitHub mutation token / Docker socket を渡さない。
+- provider egress は allowlisted API domains に限定する。
 - main/master に直接 commit しない。`agent/<task_id>` branchを使用。
 - duplicate branch / open PR は `TASK_ALREADY_RUNNING` で停止。
 - prompt は shell interpolationせず、本文をログへ出さない。
+- returned patch は trusted outer layer が parse / whitespace / applicability を検証する。
+- agent-generated `.github/workflows/**` は自動publishしない。
+- trusted commit stageでは repository-controlled Git hooksを無効化する。
 - cross-repo tokenはGitHub App installation tokenで対象repoへ限定し、値をログへ出さない。
 - review repairは `CHANGES_REQUESTED` のみを扱い、review本文をuntrusted inputとして明示的に区切る。
 - initial dispatchのduplicate guardは維持し、repair専用pathだけが検証済みの既存PR branchを再開する。
@@ -129,10 +153,7 @@ REVIEW_REPAIR_MODEL=...      # optional model override
 REVIEW_REPAIR_RUNNER_LABELS=["self-hosted","review-repair"]
 ```
 
-最後のvariableはJSON array。`self-hosted` と専用の `review-repair` labelが必須で、
-未設定・不正な場合はdispatcherがfail-closedで停止する。長時間のagent処理を
-`ubuntu-latest` へfallbackする経路はない。self-hosted runnerには必要なlabels、
-OpenCode、Node/npm、git、`gh`、`jq`、GNU `timeout`互換コマンドを事前に用意する。
+最後のvariableはJSON array。`self-hosted` と専用の `review-repair` labelが必須で、未設定・不正な場合はdispatcherがfail-closedで停止する。長時間のagent処理を `ubuntu-latest` へfallbackする経路はない。self-hosted runnerには必要なlabels、Docker、git、`gh`、`jq` を用意する。coding CLI自体はtrusted Docker imageへpinして構築する。
 
 即時rollbackは `REVIEW_REPAIR_ENABLED=false`。通常のIssue dispatchと既存PRには影響しない。
 
