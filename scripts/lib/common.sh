@@ -9,10 +9,13 @@
 set -uo pipefail
 
 FAILURE_FILE="${RUNNER_TEMP:-/tmp}/failure_category"
+FAILURE_REASON_FILE="${RUNNER_TEMP:-/tmp}/failure_reason"
 SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-/tmp/agent_step_summary.md}"
 
 mkdir -p "$(dirname "$FAILURE_FILE")"
 [ -f "$FAILURE_FILE" ] || : > "$FAILURE_FILE"
+mkdir -p "$(dirname "$FAILURE_REASON_FILE")"
+[ -f "$FAILURE_REASON_FILE" ] || : > "$FAILURE_REASON_FILE"
 mkdir -p "$(dirname "$SUMMARY_FILE")"
 [ -f "$SUMMARY_FILE" ] || : > "$SUMMARY_FILE"
 
@@ -68,6 +71,9 @@ log_error() { printf '[ERROR] %s\n' "$*" >&2; }
 
 set_failure() { printf '%s\n' "$1" > "$FAILURE_FILE"; }
 get_failure() { cat "$FAILURE_FILE" 2>/dev/null || echo UNKNOWN; }
+set_failure_reason() { printf '%s\n' "$1" > "$FAILURE_REASON_FILE"; }
+clear_failure_reason() { : > "$FAILURE_REASON_FILE"; }
+get_failure_reason() { cat "$FAILURE_REASON_FILE" 2>/dev/null || echo UNKNOWN; }
 
 fail_with() {
   local category="$1"; shift
@@ -125,5 +131,52 @@ agent_run_clean() {
     agent_exec_clean "$credential_var" "$credential_value" -- timeout "${max_runtime}m" "$@" >"$logfile" 2>&1
   else
     agent_exec_clean "$credential_var" "$credential_value" -- "$@" >"$logfile" 2>&1
+  fi
+}
+
+# apply_agent_patch <target-dir> <patch-file> <diff-status>
+#
+# Process the result of a git diff --no-index between base and workspace.
+# All post-agent patch classification is owned by this single shared helper
+# so ordinary dispatch and review-repair behave identically.
+#
+# diff_status outside {0,1} => FAILURE_CATEGORY=AGENT_START_FAILED, no FAILURE_REASON.
+# diff_status=0             => FAILURE_REASON=NO_CHANGES, FAILURE_CATEGORY=AGENT_PATCH_INVALID.
+# empty patch file          => FAILURE_REASON=EMPTY_PATCH, FAILURE_CATEGORY=AGENT_PATCH_INVALID.
+# git apply --check -p2    => FAILURE_REASON=PATCH_PARSE_FAILED, FAILURE_CATEGORY=AGENT_PATCH_INVALID.
+# strict whitespace check   => FAILURE_REASON=PATCH_VALIDATION_FAILED, FAILURE_CATEGORY=AGENT_PATCH_INVALID.
+# final git apply fail      => FAILURE_CATEGORY=AGENT_PATCH_INVALID, no FAILURE_REASON.
+# success                   => returns 0.
+apply_agent_patch() {
+  local target_dir="$1" patch_file="$2" diff_status="$3"
+
+  if [ "$diff_status" -ne 0 ] && [ "$diff_status" -ne 1 ]; then
+    clear_failure_reason
+    fail_with "$CAT_AGENT_START" "could not create agent patch from isolated workspace"
+  fi
+
+  if [ "$diff_status" -eq 0 ]; then
+    set_failure_reason NO_CHANGES
+    fail_with "$CAT_AGENT_PATCH_INVALID" "agent produced no changes"
+  fi
+
+  if [ ! -s "$patch_file" ]; then
+    set_failure_reason EMPTY_PATCH
+    fail_with "$CAT_AGENT_PATCH_INVALID" "agent patch is empty"
+  fi
+
+  if ! git -C "$target_dir" apply --check -p2 "$patch_file" 2>/dev/null; then
+    set_failure_reason PATCH_PARSE_FAILED
+    fail_with "$CAT_AGENT_PATCH_INVALID" "isolated agent patch failed parse validation"
+  fi
+
+  if ! git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" 2>/dev/null; then
+    set_failure_reason PATCH_VALIDATION_FAILED
+    fail_with "$CAT_AGENT_PATCH_INVALID" "isolated agent patch failed whitespace validation"
+  fi
+
+  if ! git -C "$target_dir" apply --whitespace=error -p2 "$patch_file"; then
+    clear_failure_reason
+    fail_with "$CAT_AGENT_PATCH_INVALID" "could not import agent patch"
   fi
 }
