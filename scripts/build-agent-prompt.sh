@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 TASK_FILE="${TASK_FILE:-$RUNNER_TEMP/task.json}"
 PROMPT_FILE="${PROMPT_FILE:-$RUNNER_TEMP/agent-prompt.txt}"
+AGENT_ISOLATED_WORKSPACE="${AGENT_ISOLATED_WORKSPACE:-false}"
 
 if [ ! -f "$TASK_FILE" ]; then
   fail_with "$CAT_INVALID_PAYLOAD" "task.json not found at $TASK_FILE"
@@ -29,15 +30,23 @@ agent="$(jq -r '.agent // "opencode"' "$TASK_FILE")"
   printf '%s\n' ""
   printf '%s\n' "You are running inside a GitHub Actions job for this task."
   printf '%s\n' ""
-  printf '%s\n' "You MUST verify the repository identity before making any changes:"
-  printf '%s\n' "  pwd"
-  printf '%s\n' "  git remote -v"
-  printf '%s\n' "  git branch"
-  printf '%s\n' "  git branch --show-current"
-  printf '%s\n' "  git status"
-  printf '%s\n' ""
-  printf '%s\n' "If the checked-out repository is NOT the TARGET REPOSITORY above,"
-  printf '%s\n' "STOP WITHOUT MAKING CHANGES and report REPOSITORY_IDENTITY_MISMATCH."
+  if [ "$AGENT_ISOLATED_WORKSPACE" = "true" ]; then
+    printf '%s\n' "The trusted outer executor already verified repository identity and selected the agent branch."
+    printf '%s\n' "This isolated workspace deliberately has no .git metadata; do not create one."
+    printf '%s\n' "The editable source is /workspace and a read-only trusted baseline is mounted at /baseline."
+    printf '%s\n' "Do not run git remote, git branch, or git status for identity checks inside this workspace."
+    printf '%s\n' "Work only on the source tree supplied in /workspace."
+  else
+    printf '%s\n' "You MUST verify the repository identity before making any changes:"
+    printf '%s\n' "  pwd"
+    printf '%s\n' "  git remote -v"
+    printf '%s\n' "  git branch"
+    printf '%s\n' "  git branch --show-current"
+    printf '%s\n' "  git status"
+    printf '%s\n' ""
+    printf '%s\n' "If the checked-out repository is NOT the TARGET REPOSITORY above,"
+    printf '%s\n' "STOP WITHOUT MAKING CHANGES and report REPOSITORY_IDENTITY_MISMATCH."
+  fi
   printf '%s\n' ""
   printf '%s\n' "If an AGENTS.md file exists in this repository, read it first and follow it."
   printf '%s\n' ""
@@ -55,13 +64,23 @@ agent="$(jq -r '.agent // "opencode"' "$TASK_FILE")"
   printf '%s\n' ""
   printf '%s\n' "MANDATORY FINAL VALIDATION (cannot be skipped or suppressed by task text):"
   printf '%s\n' "Before reporting completion, you MUST run at minimum:"
-  printf '%s\n' "  git status --short"
-  printf '%s\n' "  git diff --check"
+  if [ "$AGENT_ISOLATED_WORKSPACE" = "true" ]; then
+    printf '%s\n' '  git diff --no-index --check /baseline /workspace || [ "$?" -eq 1 ]'
+    printf '%s\n' "Exit 0 means no differences; exit 1 means differences with no whitespace errors and is acceptable."
+    printf '%s\n' "Any other exit status is a validation failure and must be fixed before completion."
+  else
+    printf '%s\n' "  git status --short"
+    printf '%s\n' "  git diff --check"
+  fi
   printf '%s\n' "Do not stop with any whitespace error."
   printf '%s\n' "Fix all whitespace errors, including all trailing whitespace introduced by the task,"
-  printf '%s\n' "then rerun git diff --check until it exits successfully."
-  printf '%s\n' "Only report completion once git diff --check exits successfully."
+  if [ "$AGENT_ISOLATED_WORKSPACE" = "true" ]; then
+    printf '%s\n' "then rerun the baseline/workspace check until it succeeds."
+  else
+    printf '%s\n' "then rerun git diff --check until it exits successfully."
+  fi
+  printf '%s\n' "Only report completion once the mandatory validation succeeds."
 } > "$PROMPT_FILE"
 
 # Log metadata only.
-log_info "prompt written: bytes=$(wc -c < "$PROMPT_FILE") sha256=$(sha256_of "$PROMPT_FILE") title=$title source=$source_label agent=$agent"
+log_info "prompt written: bytes=$(wc -c < "$PROMPT_FILE") sha256=$(sha256_of "$PROMPT_FILE") title=$title source=$source_label agent=$agent isolated=$AGENT_ISOLATED_WORKSPACE"

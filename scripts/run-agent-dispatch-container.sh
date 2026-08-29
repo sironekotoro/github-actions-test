@@ -88,12 +88,14 @@ prompt_file="$prompt_dir/agent-prompt.txt"
 mkdir -p "$base_dir" "$workspace_dir" "$prompt_dir"
 
 # The untrusted agent sees only a disposable .git-free source copy. The base
-# copy remains outside the container solely to construct a checked patch.
+# copy is mounted read-only as /baseline so the agent can validate whitespace
+# without receiving repository metadata. The same base is later used by the
+# trusted outer executor to construct the checked import patch.
 tar -C "$target_dir" --exclude=.git -cf - . | tar -C "$base_dir" -xf - \
   || fail_with "$CAT_AGENT_START" "could not stage target for isolated agent"
 tar -C "$base_dir" -cf - . | tar -C "$workspace_dir" -xf - \
   || fail_with "$CAT_AGENT_START" "could not create isolated agent workspace"
-TASK_FILE="$task_file" PROMPT_FILE="$prompt_file" \
+AGENT_ISOLATED_WORKSPACE=true TASK_FILE="$task_file" PROMPT_FILE="$prompt_file" \
   bash "$_CONTAINER_SCRIPT_DIR/build-agent-prompt.sh" \
   || fail_with "$CAT_AGENT_START" "could not prepare isolated agent prompt"
 chmod 700 "$agent_root" "$base_dir" "$workspace_dir" "$prompt_dir"
@@ -119,6 +121,7 @@ docker run --rm --init \
   --pids-limit="${AGENT_DISPATCH_CONTAINER_PIDS_LIMIT:-512}" \
   --memory="${AGENT_DISPATCH_CONTAINER_MEMORY:-4g}" \
   --mount "type=bind,src=$workspace_dir,dst=/workspace" \
+  --mount "type=bind,src=$base_dir,dst=/baseline,readonly" \
   --mount "type=bind,src=$prompt_file,dst=/runtime/agent-prompt.txt,readonly" \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,mode=1777,size=1g \
   --tmpfs /home/agent:rw,nosuid,nodev,noexec,mode=1777,size=512m \
@@ -182,6 +185,6 @@ diff_status=$?
 set -e
 apply_agent_patch "$target_dir" "$patch_file" "$diff_status"
 
-summary "| agent isolation | Docker; non-root; read-only root; provider-allowlisted egress; selected credential only; no host credentials, .git, or Docker socket |"
+summary "| agent isolation | Docker; non-root; read-only root; provider-allowlisted egress; selected credential only; read-only .git-free baseline; no host credentials, .git, or Docker socket |"
 summary "| tests | pass (isolated agent container) |"
 echo "result=pass" >> "${GITHUB_OUTPUT:-/dev/null}"
