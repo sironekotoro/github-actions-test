@@ -1,0 +1,7 @@
+# Public cross-repository targets polled by scheduled Review Repair.
+#
+# This is intentionally narrower than allowed-repositories.txt. Add a target
+# only after the dispatcher GitHub App is installed there and cross-repo Review
+# Repair is intended for that repository. Every entry must also exist in
+# allowed-repositories.txt.
+sironekotoro/zengin-pl
