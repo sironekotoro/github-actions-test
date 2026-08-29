@@ -330,7 +330,7 @@ t "agent egress is internal and OpenRouter-only" "yes" "$(grep -q 'network creat
 t "agent image contains trusted runtime only" "yes" "$(grep -q 'COPY scripts/run-agent.sh' "$AGENT_DOCKERFILE" && ! grep -q 'COPY target\|COPY \. ' "$AGENT_DOCKERFILE" && echo yes || echo no)"
 t "agent image pins the OpenCode runtime" "yes" "$(grep -q 'opencode-ai@1.18.16' "$AGENT_DOCKERFILE" && echo yes || echo no)"
 t "prebuilt prompt mode is explicit" "yes" "$(grep -q 'AGENT_USE_PREBUILT_PROMPT' "$CONTAINER_AGENT" && grep -q 'AGENT_USE_PREBUILT_PROMPT' "$ROOT/scripts/run-agent.sh" && echo yes || echo no)"
-t "untrusted agent patch is checked before host import" "yes" "$(grep -q 'git -C "\$target_dir" apply --check' "$CONTAINER_AGENT" && grep -q 'git -C "\$target_dir" apply --whitespace=error' "$CONTAINER_AGENT" && echo yes || echo no)"
+t "untrusted agent patch is checked before host import" "yes" "$(grep -q 'apply_agent_patch' "$CONTAINER_AGENT" && grep -q 'apply_agent_patch' "$ROOT/scripts/lib/common.sh" && echo yes || echo no)"
 
 # The host staging copy can contain target source and review text. Cleanup must
 # run both on the normal path and when an enclosing command fails.
