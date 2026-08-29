@@ -37,13 +37,15 @@ agent_run() {
   [ "$credential_var" = "OPENAI_API_KEY" ] \
     || fail_with "$CAT_AGENT_AUTH" "Codex openai-api profile resolved an unexpected credential variable"
 
-  # Codex defaults to a read-only filesystem sandbox. The outer Agent Dispatch
-  # container already provides the stronger capability boundary: read-only
-  # rootfs, no host .git/HOME/credentials/socket, and only /workspace mounted
-  # writable. Select workspace-write inside Codex so it can edit that disposable
-  # source tree without broadening the outer container boundary.
+  # The trusted Agent Dispatch Docker container is the actual capability
+  # boundary: non-root, read-only rootfs, no host HOME/.git/GitHub credentials
+  # or Docker socket, provider-allowlisted egress, read-only /baseline, and only
+  # the disposable /workspace bind mounted writable. Codex's nested Linux
+  # sandbox can conflict with that external sandbox and silently prevent edits.
+  # Codex documents this bypass specifically for externally sandboxed runtimes.
+  # Keep --skip-git-repo-check because the disposable workspace has no .git.
   agent_run_clean "CODEX_API_KEY" "$credential_value" "$max_runtime" "$logfile" -- \
-    codex exec --sandbox workspace-write --skip-git-repo-check "$prompt"
+    codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "$prompt"
 }
 
 is_auth_agent_error() {
