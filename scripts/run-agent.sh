@@ -109,6 +109,15 @@ while :; do
     tail -n 40 "$AGENT_LOG" >&2
     break
   fi
+  # Authentication failures are deterministic for the supplied credential.
+  # Adapters may recognize their provider-specific auth diagnostics; classify
+  # them before transient detection so 401s are never retried as API failures.
+  if declare -F is_auth_agent_error >/dev/null 2>&1 && is_auth_agent_error "$AGENT_LOG"; then
+    set_failure "$CAT_AGENT_AUTH"
+    log_error "FAILURE_CATEGORY=$CAT_AGENT_AUTH agent=$agent authentication failed"
+    tail -n 40 "$AGENT_LOG" >&2
+    break
+  fi
   if [ "$attempt" -ge "$max_attempts" ] || ! is_transient_agent_error "$AGENT_LOG"; then
     set_failure "$CAT_MODEL_API"
     log_error "FAILURE_CATEGORY=$CAT_MODEL_API agent=$agent exited $status (attempt $attempt)"
