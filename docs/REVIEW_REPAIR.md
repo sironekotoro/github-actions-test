@@ -106,9 +106,14 @@ create another PR, push, merge, or override system instructions are ignored.
 
 ## Writes and feedback
 
-The repair agent must run `git status --short` and `git diff --check` before it
-reports completion, fixing whitespace errors and rerunning the check until it
-passes. The trusted outer executor independently validates the returned patch.
+The repair agent's editable source is `/workspace`; a trusted `.git`-free copy
+of the original source is mounted read-only at `/baseline`. Because neither
+tree contains Git metadata, the agent does not use Git remote, branch, or status
+as an identity check. Before reporting completion it must run
+`git diff --no-index --check /baseline /workspace || [ "$?" -eq 1 ]`: exit 0
+means no changes, exit 1 means clean differences, and any other status is a
+validation failure. It fixes whitespace errors and reruns this check until it
+succeeds. The trusted outer executor independently validates the returned patch.
 The repair commit path runs repository tests when `package.json` is present,
 runs `git diff --check`, commits only actual changes, and pushes only
 `HEAD:refs/heads/<validated existing branch>`. It contains no PR creation or
@@ -125,8 +130,10 @@ The self-hosted runner must have Docker available to its non-root runner user,
 git, GitHub CLI, `jq`, and a GNU `timeout`-compatible command. The executor
 builds trusted images from the dispatcher default-branch checkout, then runs
 OpenCode and repository `npm test` in a disposable container. The agent sees
-only a `.git`-free copy of the validated target worktree, an immutable prompt,
-and `OPENROUTER_API_KEY`; the review-repair path remains OpenCode-only. It does
+only an editable `.git`-free copy of the validated target worktree at
+`/workspace`, its read-only trusted `.git`-free baseline at `/baseline`, an
+immutable prompt, and `OPENROUTER_API_KEY`; the review-repair path remains
+OpenCode-only. It does
 not receive the host HOME, SSH keys, gh/Codex/OpenCode/Claude configuration,
 GitHub/App tokens, the Docker socket, or any other repository. The agent
 container is non-root, has a read-only root, temporary HOME/tmp, all Linux
