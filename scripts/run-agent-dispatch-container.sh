@@ -180,10 +180,23 @@ set +e
 ) > "$patch_file"
 diff_status=$?
 set -e
-[ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ] \
-  || fail_with "$CAT_AGENT_START" "could not create agent patch from isolated workspace"
-git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" \
-  || fail_with "$CAT_AGENT_PATCH_INVALID" "isolated agent patch failed validation"
+
+# Transport classification: map diff / patch / apply outcomes to categories.
+if [ "$diff_status" -eq 0 ]; then
+  fail_with "$CAT_AGENT_PATCH_INVALID" "FAILURE_REASON=NO_CHANGES"
+fi
+[ "$diff_status" -eq 1 ] || fail_with "$CAT_AGENT_START" "could not create agent patch from isolated workspace"
+
+if [ ! -s "$patch_file" ]; then
+  fail_with "$CAT_AGENT_PATCH_INVALID" "FAILURE_REASON=EMPTY_PATCH"
+fi
+
+git -C "$target_dir" apply --check -p2 "$patch_file" 2>/dev/null \
+  || fail_with "$CAT_AGENT_PATCH_INVALID" "FAILURE_REASON=PATCH_PARSE_FAILED"
+
+git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" 2>/dev/null \
+  || fail_with "$CAT_AGENT_PATCH_INVALID" "FAILURE_REASON=PATCH_VALIDATION_FAILED"
+
 git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" \
   || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import isolated agent patch"
 
