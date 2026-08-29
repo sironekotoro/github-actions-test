@@ -147,16 +147,6 @@ docker run --rm --init \
   "${credential_args[@]}" \
   "$agent_image" bash -ceu '
     bash /opt/review-repair-runner/run-agent.sh
-    # Repository tests are untrusted code and do not inherit the API key.
-    unset OPENROUTER_API_KEY
-    unset OPENAI_API_KEY
-    unset ANTHROPIC_API_KEY
-    unset AGENT_CREDENTIAL_VALUE
-    unset AGENT_CREDENTIAL_PROFILE
-    unset AGENT
-    if [ -f package.json ]; then
-      npm test
-    fi
   '
 container_status=$?
 set -e
@@ -185,8 +175,18 @@ set +e
 ) > "$patch_file"
 diff_status=$?
 set -e
+# Freeze the exact agent output before executing untrusted repository tests.
+# Tests receive a disposable copy and cannot change the trusted import patch.
+chmod 400 "$patch_file"
+TEST_SOURCE_DIR="$workspace_dir" \
+TEST_STAGING_ROOT="$agent_root" \
+TEST_IMAGE="$agent_image" \
+TEST_RUNNER_UID="$runner_uid" \
+TEST_RUNNER_GID="$runner_gid" \
+  bash "$_CONTAINER_SCRIPT_DIR/run-isolated-repository-tests.sh" || exit $?
+
 apply_agent_patch "$target_dir" "$patch_file" "$diff_status"
 
 summary "| agent isolation | Docker; non-root; read-only root; provider-allowlisted egress; selected credential only; read-only .git-free baseline; no host credentials, .git, or Docker socket |"
-summary "| tests | pass (isolated agent container) |"
+summary "| tests | pass (separate no-network disposable container; agent patch frozen first) |"
 echo "result=pass" >> "${GITHUB_OUTPUT:-/dev/null}"
