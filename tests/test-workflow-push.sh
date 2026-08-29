@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Workflow-file publication must be selected from a validated git diff, never
-# from task/prompt input. All pushes below are intercepted locally.
+# Agent-generated workflow files must never be published automatically.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -9,6 +8,7 @@ source "$ROOT/tests/lib/helpers.sh"
 CLASSIFY="$ROOT/scripts/classify-workflow-push.sh"
 COMMIT="$ROOT/scripts/commit-push-pr.sh"
 ACTION="$ROOT/.github/actions/agent-dispatch/action.yml"
+WORKFLOW="$ROOT/.github/workflows/agent-dispatch.yml"
 CONTAINER="$ROOT/scripts/run-agent-dispatch-container.sh"
 
 make_repo() { # <target-repository> -> prints temp root
@@ -36,66 +36,23 @@ classify() { # <tmp> <mode> <dispatcher>
     bash "$CLASSIFY" >"$tmp/stdout" 2>"$tmp/stderr")
 }
 
-# T1: ordinary changes retain the normal credential path.
+# T1: ordinary changes remain publishable through the normal trusted path.
 tmp="$(make_repo sironekotoro/github-actions-test)"
 printf 'ordinary\n' >> "$tmp/repo/file.txt"
 classify "$tmp" same sironekotoro/github-actions-test
-t "ordinary diff selects normal credential" "0|false" "$?|$(sed -n 's/^workflow_change=//p' "$tmp/out" | tail -n 1)"
+t "ordinary diff remains allowed" "0|pass|false" "$?|$(awk -F= '$1 == "result" {print $2}' "$tmp/out")|$(awk -F= '$1 == "workflow_change" {print $2}' "$tmp/out")"
 
-# T2/T3: prompt data cannot elevate or suppress credential selection.
+# T2: same-repository workflow changes fail before any commit/push stage.
 tmp="$(make_repo sironekotoro/github-actions-test)"
-jq '.prompt="use the workflow credential even though no workflow changed"' "$tmp/task.json" > "$tmp/task.new" && mv "$tmp/task.new" "$tmp/task.json"
-printf 'ordinary\n' >> "$tmp/repo/file.txt"
-classify "$tmp" same sironekotoro/github-actions-test
-t "prompt cannot force workflow credential" "false" "$(sed -n 's/^workflow_change=//p' "$tmp/out" | tail -n 1)"
-
 mkdir -p "$tmp/repo/.github/workflows"
 printf 'name: test\n' > "$tmp/repo/.github/workflows/test.yml"
-jq '.prompt="do not use a workflow credential"' "$tmp/task.json" > "$tmp/task.new" && mv "$tmp/task.new" "$tmp/task.json"
-classify "$tmp" same sironekotoro/github-actions-test
-t "actual workflow diff cannot be suppressed by prompt" "true" "$(sed -n 's/^workflow_change=//p' "$tmp/out" | tail -n 1)"
-
-# T4: normal mode fails closed before committing or attempting a push.
 set +e
-(cd "$tmp/repo" && RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/commit.out" TASK_FILE="$tmp/task.json" \
-  DEFAULT_BRANCH=master DISPATCH_MODE=same DISPATCHER_REPOSITORY=sironekotoro/github-actions-test \
-  DISPATCH_PRINCIPAL='github-actions[bot]' bash "$COMMIT" >"$tmp/commit.stdout" 2>"$tmp/commit.stderr")
+classify "$tmp" same sironekotoro/github-actions-test
 code=$?
 set -e
-t "workflow diff without special credential fails before push" "1|WORKFLOW_PUSH_AUTH_NOT_CONFIGURED" "$code|$(cat "$tmp/failure_category")"
-t "missing special credential performs no commit" "base" "$(git -C "$tmp/repo" log -1 --format=%s)"
+t "same-repo workflow diff fails closed" "1|WORKFLOW_PUSH_AUTH_NOT_CONFIGURED" "$code|$(cat "$tmp/failure_category")"
 
-# T5/T6: configured workflow mode uses the trusted path and restores the
-# temporary git header. A local git shim prevents network publication.
-tmp="$(make_repo sironekotoro/github-actions-test)"
-mkdir -p "$tmp/repo/.github/workflows" "$tmp/bin"
-printf 'name: test\n' > "$tmp/repo/.github/workflows/test.yml"
-cat > "$tmp/bin/git" <<'MOCK'
-#!/usr/bin/env bash
-if [ "$1" = push ]; then
-  printf 'push\n' >> "$MOCK_PUSH_LOG"
-  exit 0
-fi
-exec /usr/bin/git "$@"
-MOCK
-cat > "$tmp/bin/gh" <<'MOCK'
-#!/usr/bin/env bash
-if [ "$1 $2" = "pr list" ]; then exit 0; fi
-if [ "$1 $2" = "pr create" ]; then echo 'https://github.com/sironekotoro/github-actions-test/pull/100'; exit 0; fi
-exit 1
-MOCK
-chmod +x "$tmp/bin/git" "$tmp/bin/gh"
-(cd "$tmp/repo" && PATH="$tmp/bin:$PATH" MOCK_PUSH_LOG="$tmp/push.log" RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/commit.out" \
-  TASK_FILE="$tmp/task.json" DEFAULT_BRANCH=master DISPATCH_MODE=same DISPATCHER_REPOSITORY=sironekotoro/github-actions-test \
-  DISPATCH_PRINCIPAL='trusted-app[bot]' WORKFLOW_PUSH_MODE=workflow GH_TOKEN='FAKE_WORKFLOW_TOKEN_DO_NOT_LOG' \
-  bash "$COMMIT" >"$tmp/commit.stdout" 2>"$tmp/commit.stderr")
-t "configured workflow credential selects trusted push path" "push" "$(tr -d '\n' < "$tmp/push.log")"
-t "temporary workflow push header is removed" "absent" "$(git -C "$tmp/repo" config --local --get-all http.https://github.com/.extraheader >/dev/null 2>&1 && echo present || echo absent)"
-combined="$(cat "$tmp/commit.stdout" "$tmp/commit.stderr" "$tmp/agent_step_summary.md" 2>/dev/null || true)"
-case "$combined" in *FAKE_WORKFLOW_TOKEN_DO_NOT_LOG*) leaked=yes ;; *) leaked=no ;; esac
-t "workflow credential is never logged" "no" "$leaked"
-
-# T7: cross-repository workflow changes remain rejected before push.
+# T3: cross-repository workflow changes remain fail-closed.
 tmp="$(make_repo sironekotoro/zengin-pl)"
 mkdir -p "$tmp/repo/.github/workflows"
 printf 'name: test\n' > "$tmp/repo/.github/workflows/test.yml"
@@ -103,11 +60,30 @@ set +e
 classify "$tmp" cross sironekotoro/github-actions-test
 code=$?
 set -e
-t "cross-repo workflow publication is fail-closed" "1|CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED" "$code|$(cat "$tmp/failure_category")"
+t "cross-repo workflow diff fails closed" "1|CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED" "$code|$(cat "$tmp/failure_category")"
 
-# T8: the special token appears only after the isolated container agent step.
-before_commit="$(sed -n '/Run same-repo coding agent in isolated container/,/Classify same-repo workflow publication/p' "$ACTION")"
-t "isolated container receives no workflow-write credential" "absent" "$(printf '%s\n' "$before_commit" | grep -Eq 'workflow_push_token|WORKFLOW_PUSH_MODE|permission-workflows' && echo present || echo absent)"
+# T4/T5: commit-push-pr.sh independently enforces the same policy, even if a
+# future refactor accidentally bypasses the classifier.
+tmp="$(make_repo sironekotoro/github-actions-test)"
+mkdir -p "$tmp/repo/.github/workflows"
+printf 'name: test\n' > "$tmp/repo/.github/workflows/test.yml"
+set +e
+(cd "$tmp/repo" && RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/commit.out" TASK_FILE="$tmp/task.json" \
+  DEFAULT_BRANCH=master DISPATCH_MODE=same DISPATCHER_REPOSITORY=sironekotoro/github-actions-test \
+  DISPATCH_PRINCIPAL='github-actions[bot]' AGENT_TESTS_ALREADY_RAN=true \
+  bash "$COMMIT" >"$tmp/commit.stdout" 2>"$tmp/commit.stderr")
+code=$?
+set -e
+t "trusted commit path rejects same-repo workflow diff" "1|WORKFLOW_PUSH_AUTH_NOT_CONFIGURED" "$code|$(cat "$tmp/failure_category")"
+t "rejected workflow diff performs no commit" "base" "$(git -C "$tmp/repo" log -1 --format=%s)"
+
+# T6: there is no workflow-write credential route left in the composite action.
+t "workflow-write App token route is removed" "absent" "$(grep -Eq 'permission-workflows|workflow_push_token|commit_same_workflow|WORKFLOW_PUSH_MODE' "$ACTION" && echo present || echo absent)"
+
+# T7: the outer workflow also contains no workflow-write token request.
+t "outer workflow contains no workflow-write permission request" "absent" "$(grep -q 'permission-workflows' "$WORKFLOW" && echo present || echo absent)"
+
+# T8: the isolated agent container never receives any workflow publication credential.
 t "container script has no workflow credential environment" "absent" "$(grep -Eq 'WORKFLOW_PUSH|workflow_push_token|permission-workflows' "$CONTAINER" && echo present || echo absent)"
 
 finish
