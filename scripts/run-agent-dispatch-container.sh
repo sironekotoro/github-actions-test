@@ -173,19 +173,7 @@ if [ -e "$workspace_dir/.git" ]; then
 fi
 
 patch_file="$agent_root/agent.patch"
-set +e
-(
-  cd "$agent_root"
-  git diff --no-index --binary --no-ext-diff --src-prefix=a/ --dst-prefix=b/ base workspace
-) > "$patch_file"
-diff_status=$?
-set -e
-[ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ] \
-  || fail_with "$CAT_AGENT_START" "could not create agent patch from isolated workspace"
-git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" \
-  || fail_with "$CAT_AGENT_PATCH_INVALID" "isolated agent patch failed validation"
-git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" \
-  || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import isolated agent patch"
+apply_agent_patch "$target_dir" "$agent_root" "$patch_file"
 
 summary "| agent isolation | Docker; non-root; read-only root; provider-allowlisted egress; selected credential only; no host credentials, .git, or Docker socket |"
 summary "| tests | pass (isolated agent container) |"

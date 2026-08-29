@@ -106,6 +106,20 @@ make_target "$tmp"
 run_container_case "$tmp" agent-start-fail
 t "agent start failure keeps existing category" "1|AGENT_START_FAILED" "$(cat "$tmp/code")|$(cat "$tmp/failure_category")"
 
+# Structural regression: every git apply invocation inside apply_agent_patch
+# must suppress stderr to avoid leaking untrusted patch diagnostics.
+apply_body="$(grep -A50 '^apply_agent_patch()' "$ROOT/scripts/lib/common.sh" \
+  | grep 'git.*apply')"
+git_apply_lines=0
+stderr_suppressed=0
+while IFS= read -r line; do
+  git_apply_lines=$((git_apply_lines + 1))
+  case "$line" in
+    *2\>/dev/null*) stderr_suppressed=$((stderr_suppressed + 1)) ;;
+  esac
+done <<< "$apply_body"
+t "all git apply invocations suppress stderr" "$git_apply_lines|$git_apply_lines" "$git_apply_lines|$stderr_suppressed"
+
 run_agent_case() { # <tmp> <mock-agent-mode>
   local tmp="$1" mode="$2"
   mkdir -p "$tmp/bin"

@@ -127,3 +127,40 @@ agent_run_clean() {
     agent_exec_clean "$credential_var" "$credential_value" -- "$@" >"$logfile" 2>&1
   fi
 }
+
+# apply_agent_patch <target_dir> <agent_root> <patch_file>
+#
+# Shared trusted helper for ordinary dispatch and review-repair:
+#   1. Build a patch from git diff --no-index between base/ and workspace/
+#   2. Classify diff_status (outside {0,1} => AGENT_START_FAILED)
+#   3. Three-stage git apply (all with stderr suppressed):
+#      a. git apply --check -p2
+#      b. git apply --check --whitespace=error -p2
+#      c. git apply --whitespace=error -p2
+#   4. Final import failure => AGENT_PATCH_INVALID
+apply_agent_patch() {
+  local target_dir="$1" agent_root="$2" patch_file="$3"
+  local diff_status
+
+  set +e
+  (
+    cd "$agent_root"
+    git diff --no-index --binary --no-ext-diff --src-prefix=a/ --dst-prefix=b/ base workspace
+  ) > "$patch_file"
+  diff_status=$?
+  set -e
+
+  [ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ] \
+    || fail_with "$CAT_AGENT_START" "could not create patch from isolated workspace"
+
+  [ "$diff_status" -eq 1 ] || return 0
+
+  git -C "$target_dir" apply --check -p2 "$patch_file" 2>/dev/null \
+    || fail_with "$CAT_AGENT_PATCH_INVALID" "patch failed baseline validation"
+
+  git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" 2>/dev/null \
+    || fail_with "$CAT_AGENT_PATCH_INVALID" "patch failed strict validation"
+
+  git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" 2>/dev/null \
+    || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import patch"
+}

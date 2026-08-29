@@ -135,22 +135,7 @@ echo "runtime_seconds=$agent_runtime_seconds" >> "${GITHUB_OUTPUT:-/dev/null}"
   || fail_with "$CAT_AGENT_START" "isolated agent created forbidden .git entry"
 
 patch_file="$agent_root/repair.patch"
-set +e
-(
-  cd "$agent_root"
-  git diff --no-index --binary --no-ext-diff --src-prefix=a/ --dst-prefix=b/ base workspace
-) > "$patch_file"
-diff_status=$?
-set -e
-[ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ] \
-  || fail_with "$CAT_AGENT_START" "could not create repair patch from isolated workspace"
-
-# -p2 strips the controlled base/workspace prefix. git apply validates paths
-# against the validated repository and does not execute repository code.
-git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" \
-  || fail_with "$CAT_AGENT_PATCH_INVALID" "isolated repair patch failed validation"
-git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" \
-  || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import isolated repair patch"
+apply_agent_patch "$target_dir" "$agent_root" "$patch_file"
 
 summary "| agent isolation | Docker; non-root; read-only root; OpenRouter-only egress; no host credentials, .git, or Docker socket |"
 summary "| tests | pass (isolated agent container) |"
