@@ -143,6 +143,12 @@ review repair has no OpenAI or Anthropic credential and cannot select those
 adapters. The outer executor imports only a checked patch and does not run
 target tests or hooks. The API key is unset before repository tests run, and
 the container's prompt/log paths are temporary and not uploaded as artifacts.
+Before repair patch construction, the trusted wrapper scans the final workspace
+filenames, regular files, and symlink target strings for the exact `OPENROUTER_API_KEY` bytes,
+without following symlinks. A match or scanner error fails closed as
+`AGENT_CREDENTIAL_LEAK_BLOCKED`, and failure-log tails redact that exact literal.
+This blocks raw key persistence/publication, but is not complete containment because
+the agent process still receives the key; a local auth broker/relay is the long-term fix.
 Target checkout does not persist credentials,
 and the target-scoped token is used only for authenticated validated remote
 reads and the final non-force push.

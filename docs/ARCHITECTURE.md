@@ -113,6 +113,15 @@ Agent completion does not make its working tree trusted. The outer executor comp
 filesystem-only binary patch from `base` to `workspace` and calls the shared
 `apply_agent_patch` helper.
 
+Immediately before patch construction, the trusted wrapper scans every filename,
+regular file, and symlink target string in the final isolated workspace for the exact
+bytes of the selected provider credential. It does not follow symlinks and fails closed as
+`AGENT_CREDENTIAL_LEAK_BLOCKED` on a match or scanner error. Agent failure-log tails use
+the same exact-literal policy and replace the selected credential with a fixed marker.
+This blocks raw credential persistence and publication; it is not complete containment,
+because the agent process still receives the key. A local authentication broker/relay
+that keeps provider credentials outside the agent process is the long-term fix.
+
 The helper enforces:
 
 1. diff producer status must be 0 or 1
@@ -266,6 +275,7 @@ Important categories include:
 | `TASK_ALREADY_RUNNING` | duplicate branch/open PR |
 | `DIRTY_WORKING_TREE` | unexpected dirty checkout |
 | `AGENT_EXECUTOR_UNAVAILABLE` | required isolated executor configuration unavailable |
+| `AGENT_CREDENTIAL_LEAK_BLOCKED` | exact selected credential found in final workspace, or scan failed |
 | `AGENT_UNKNOWN` | unsupported agent |
 | `AGENT_AUTH_FAILED` | selected credential invalid/missing/unsupported |
 | `AGENT_UNAVAILABLE` | selected CLI unavailable |

@@ -219,8 +219,11 @@ review-repair executor runnerにはDocker daemonとnon-root runner userのDocker
 
 agentとrepository testsは`.git`なしのtarget作業コピーだけをmountした使い捨てcontainerで実行されます。host HOME、SSH、GitHub/App token、Docker socketはcontainerへ渡しません。agent networkはinternalで、OpenRouter / OpenAI / Anthropic API HTTPSだけを許可する別proxy経由で通信します。選択した一つのAPI credentialだけがagent実行時にcontainer内の対応variableとして存在し、repository test実行前にunsetされます。
 
+patch作成直前にfinal workspaceのfilename、regular file、symlink target文字列を、選択したcredentialのexact bytesでscanします。一致またはscan errorは`AGENT_CREDENTIAL_LEAK_BLOCKED`でfail-closedし、failure log tail内の同じliteralは固定markerへ置換します。これはraw credentialの永続化・publicationを防ぎますが、agent process自体がkeyを受け取るため完全なcontainmentではありません。長期的な対策はcredentialをagent process外に保つlocal auth broker/relayです。heuristicなsecret patternには依存しません。
+
 ## Review repair failure categories
 
+- `AGENT_CREDENTIAL_LEAK_BLOCKED`: final workspaceに選択credentialのexact bytesが残存、または安全にscanできなかったためpublicationを停止。
 - `REPAIR_METADATA_INVALID`: PR内のtask metadata、review、ID、input sizeが不正。dispatcher作成PRか確認する。
 - `REPAIR_PR_IDENTITY_MISMATCH`: target/base/head repo、dispatcher identity、PR bot principalのいずれかが不一致。
 - `REPAIR_BRANCH_MISMATCH`: `agent/<task_id>`、base/default branch、review時head SHA、現在のremote SHAが不一致。
