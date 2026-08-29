@@ -14,6 +14,7 @@ tmp_root="${RUNNER_TEMP:-/tmp}"
 allowed_tmp="$tmp_root/review-allowed-repositories.txt"
 matrix_tmp="$tmp_root/review-targets.jsonl"
 seen_tmp="$tmp_root/review-targets-seen.txt"
+NORMALIZED_REPO=""
 
 [ -f "$allowlist" ] \
   || fail_with "$CAT_TARGET_NOT_ALLOWED" "dispatch allowlist is unavailable"
@@ -25,23 +26,28 @@ seen_tmp="$tmp_root/review-targets-seen.txt"
 : > "$seen_tmp"
 
 normalize_line() {
-  local line="$1" repo
+  local line="$1"
   line="${line%%#*}"
   line="$(printf '%s' "$line" | xargs)"
-  [ -n "$line" ] || return 1
-  repo="$(canonicalize_repo "$line")"
-  printf '%s' "$repo" | grep -Eq '^[a-z0-9_.-]+/[a-z0-9_.-]+$' \
+  if [ -z "$line" ]; then
+    NORMALIZED_REPO=""
+    return 1
+  fi
+  NORMALIZED_REPO="$(canonicalize_repo "$line")"
+  printf '%s' "$NORMALIZED_REPO" | grep -Eq '^[a-z0-9_.-]+/[a-z0-9_.-]+$' \
     || fail_with "$CAT_TARGET_NOT_ALLOWED" "invalid repository entry"
-  printf '%s\n' "$repo"
+  return 0
 }
 
 while IFS= read -r line || [ -n "$line" ]; do
-  repo="$(normalize_line "$line")" || continue
+  normalize_line "$line" || continue
+  repo="$NORMALIZED_REPO"
   grep -Fxq "$repo" "$allowed_tmp" 2>/dev/null || printf '%s\n' "$repo" >> "$allowed_tmp"
 done < "$allowlist"
 
 while IFS= read -r line || [ -n "$line" ]; do
-  repo="$(normalize_line "$line")" || continue
+  normalize_line "$line" || continue
+  repo="$NORMALIZED_REPO"
 
   [ "$repo" != "$dispatcher" ] \
     || fail_with "$CAT_TARGET_NOT_ALLOWED" "review-repair polling targets must be cross-repository"
