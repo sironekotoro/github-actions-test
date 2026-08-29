@@ -1,319 +1,291 @@
 # Architecture
 
+## Security invariant
+
+Non-dry-run coding-agent execution is allowed only in the isolated self-hosted Docker path.
+GitHub-hosted execution is control-plane / dry-run only and never invokes OpenCode, Codex,
+or Claude Code against a writable repository checkout.
+
+Agent-generated `.github/workflows/**` changes are never published automatically. This is
+true for same-repository and cross-repository dispatch. There is no workflow-write token
+escalation path in Agent Dispatch.
+
 ## Initial dispatch flow
 
-```
-ChatGPT / ユーザー
-  ↓  Issue 作成 + label ("opencode-run" / "agent:ready")  or  workflow_dispatch inputs
-GitHub Issue / dispatch
-  ↓
-agent-dispatch.yml route job (ubuntu-latest, GitHub-hosted)
-  ↓ runner_mode omitted/github -> Agent Dispatch (GitHub-hosted, ubuntu-latest)
-  ↓ runner_mode=self-hosted -> Agent Dispatch (self-hosted Mac, explicit opt-in)
-  ↓
-authorize-actor.sh        actor allowlist チェック
-  ↓
-parse-task.mjs            JSON payload → task.json
-  ↓
-guard-dispatcher-repo.sh  dispatcher checkout identity
-  ↓
-authorize-target.sh       committed allowlist + same/cross mode
-  ↓
-same: guard-repo.sh       cross: target-scoped App token + target checkout + guard-target-repo.sh
-  ↓
-prepare-branch.sh         dirty tree / strict duplicate 検査 → agent/<task_id>
-  ↓
-run-agent.sh              selected adapter (bounded runtime, bounded retry)
-  ↓
-classify-workflow-push.sh actual post-agent diff + identity/branch/base validation
-  ↓
-commit-push-pr.sh         npm test → commit → normal/workflow token push → PR (metadata 付き)
-  ↓
-post-feedback.sh          Issue コメント + Step summary
+```text
+ChatGPT / user
+  ↓ Issue + label (opencode-run / agent:ready) or workflow_dispatch
+Agent Dispatch route job (GitHub-hosted control plane)
+  ↓ authorize runner mode from normalized task
+  ├─ runner_mode=github + dry_run=true
+  │    → auth / checkout / identity / default-branch / prompt inspection only
+  │    → no branch, no agent, no commit, no push, no PR
+  │
+  └─ runner_mode=self-hosted (default)
+       → dedicated self-hosted Mac runner
+       → authorize actor
+       → authorize target against committed allowlist
+       → checkout target separately from dispatcher control code
+       → prepare agent/<task_id>
+       → build trusted pinned agent + egress images
+       → stage target as .git-free /baseline and /workspace
+       → isolated coding agent + repository tests
+       → filesystem-only patch creation
+       → trusted patch validation/import
+       → publication-policy validation
+       → trusted commit / push / PR
+       → feedback
 ```
 
-`runner_mode` は task metadata の `github`（既定）または `self-hosted`。route job
-が unknown value を fail-closed で拒否してから別々の job を選択するため、通常経路の
-`ubuntu-latest` は動的に self-hosted へ変化しない。self-hosted job は既存の
-`REVIEW_REPAIR_RUNNER_LABELS` JSON をそのまま使う（現状は専用 Mac）。OpenCode と
-untrusted repository tests は review-repair と同じ隔離 container で実行し、外側だけが
-validated patch を import して既存の commit/push/PR logic を実行する。
+`runner_mode` accepts only `self-hosted` and `github`.
+
+- omitted value → `self-hosted`
+- `self-hosted` → normal execution or dry-run
+- `github` → accepted only with `dry_run=true`
+- `github` + non-dry-run → `INVALID_PAYLOAD`
+
+The composite action also independently rejects an execution mode other than
+`self-hosted`. This prevents a future caller from bypassing the route-level policy.
+
+## Trusted control code vs target code
+
+On the self-hosted path the dispatcher repository checkout remains the source of trusted
+control scripts. The same-repository target is checked out separately under `target/`,
+just like a cross-repository target. The agent never runs against the dispatcher checkout
+that supplies trusted scripts.
+
+The outer executor verifies target identity before staging source for the agent. The
+agent receives only:
+
+- writable `/workspace`: `.git`-free target source copy
+- read-only `/baseline`: immutable `.git`-free source copy
+- read-only generated prompt
+- one selected provider credential
+- restricted provider egress
+
+The agent does **not** receive:
+
+- target `.git`
+- dispatcher `.git`
+- GitHub / GitHub App mutation credentials
+- host HOME / SSH / Keychain state
+- Docker socket
+- unrelated provider credentials
+
+The container is non-root, has a read-only root filesystem, drops all capabilities, uses
+`no-new-privileges`, and has pids / memory limits. The only writable source mount is
+`/workspace`.
 
 ## Agent and credential matrix
 
-`agent` and `runner_mode` are independent task fields. The dispatcher selects
-an adapter by `agent`; no workflow step contains provider-specific execution
-logic beyond selecting one credential value. The supported API-backed matrix
-is:
+`agent` and `runner_mode` are independent task fields, but agent execution is possible
+only under self-hosted isolation.
 
-| agent | profile | exact invocation | credential visible to the CLI |
-|---|---|---|---|
-| `opencode` | `openrouter` | `opencode run --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` |
-| `codex` | `openai-api` | `codex exec --skip-git-repo-check "$prompt"` | `OPENAI_API_KEY` |
-| `claude-code` | `anthropic-api` | `claude -p "$prompt"` | `ANTHROPIC_API_KEY` |
+| agent | profile | exact invocation | repository secret | runtime credential |
+|---|---|---|---|---|
+| `opencode` | `openrouter` | `opencode run --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY` |
+| `codex` | `openai-api` | `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "$prompt"` | `OPENAI_API_KEY` | `CODEX_API_KEY` |
+| `claude-code` | `anthropic-api` | `claude -p "$prompt"` | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY` |
 
-The Codex and Claude adapters deliberately use their documented
-noninteractive forms: `codex exec` and `claude -p`. The model input remains an
-OpenRouter-compatible override for the default OpenCode path; Codex and Claude
-use their CLI defaults until provider-specific model validation is added.
+The workflow resolves only the selected secret into `AGENT_CREDENTIAL_VALUE`.
+`run-agent.sh` and the adapter then use `env -i` so unrelated secrets and arbitrary
+runner environment variables are not inherited by the CLI.
 
-The workflow resolves the selected secret into one generic
-`AGENT_CREDENTIAL_VALUE`. `run-agent.sh` then passes only the selected variable
-through `env -i`; unrelated API keys, `GH_TOKEN`/`GITHUB_TOKEN`, host CLI
-configuration, and arbitrary inherited variables are absent from the agent
-process. Repository tests run after the agent with all API variables and the
-generic value unset. No `env $string command` construction is used.
+For pinned Codex 0.147.0, the external source contract remains `OPENAI_API_KEY`, while
+the adapter translates it only at the Codex child-process boundary to `CODEX_API_KEY`
+for ephemeral headless API authentication.
 
-`chatgpt-subscription` and `claude-subscription` remain represented in the
-compatibility matrix for a future safe implementation, but fail closed with
-`AGENT_AUTH_FAILED` before container or CLI execution. There is no host-auth
-fallback. Enabling those profiles requires trusted-host identity, a
-temporary per-job credential handoff into the selected container, and cleanup.
+Subscription profiles (`chatgpt-subscription`, `claude-subscription`) remain represented
+for future work but fail closed with `AGENT_AUTH_FAILED`. There is no host-auth fallback.
 
-The trusted self-hosted image pins `opencode-ai@1.18.16`,
-`@openai/codex@0.147.0`, and `@anthropic-ai/claude-code@2.1.165`. The disposable
-agent network permits HTTPS CONNECT only to the three provider API domains
-needed by the API-backed matrix (`*.openrouter.ai`, `api.openai.com`, and
-`api.anthropic.com`). The image has all three CLIs, but runtime execution still
-requires the selected API credential and never installs a host fallback.
+The trusted image pins:
 
-## Review repair flow
+- `opencode-ai@1.18.16`
+- `@openai/codex@0.147.0`
+- `@anthropic-ai/claude-code@2.1.165`
 
-`review-repair.yml` is deliberately separate from initial dispatch and is a
-short-lived GitHub-hosted control plane. `review-repair-executor.yml` is the
-long-running self-hosted data plane.
+The egress proxy permits HTTPS CONNECT only to the provider API domains required by this
+matrix.
+
+## Patch boundary
+
+Agent completion does not make its working tree trusted. The outer executor computes a
+filesystem-only binary patch from `base` to `workspace` and calls the shared
+`apply_agent_patch` helper.
+
+The helper enforces:
+
+1. diff producer status must be 0 or 1
+2. no-change and empty-patch cases are classified explicitly
+3. baseline `git apply --check -p2`
+4. strict `git apply --check --whitespace=error -p2`
+5. final `git apply --whitespace=error -p2`
+6. `git apply` stderr is not exposed
+
+Durable patch reasons are:
+
+- `NO_CHANGES`
+- `EMPTY_PATCH`
+- `PATCH_PARSE_FAILED`
+- `PATCH_VALIDATION_FAILED`
+
+Repository tests run inside the same isolated container after provider credentials are
+unset. The trusted outer commit stage does not re-execute target tests.
+
+## Workflow-file publication policy
+
+Agent-generated `.github/workflows/**` files are prohibited from automatic publication.
+This policy is enforced twice:
+
+1. `classify-workflow-push.sh` after patch import and identity/branch validation
+2. `commit-push-pr.sh` immediately before staging/commit as defense in depth
+
+Results:
+
+| case | result |
+|---|---|
+| same repo, ordinary diff | normal trusted commit/push/PR |
+| cross repo, ordinary diff | target-scoped App token commit/push/PR |
+| same repo, `.github/workflows/**` diff | `WORKFLOW_PUSH_AUTH_NOT_CONFIGURED` fail-closed |
+| cross repo, `.github/workflows/**` diff | `CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED` fail-closed |
+
+The legacy automatic workflow-write App-token route has been removed. Agent Dispatch no
+longer requests `permission-workflows: write`, and there is no `WORKFLOW_PUSH_MODE`
+selection. A workflow change must be reviewed and published outside the automated agent
+PR path by a human or separate trusted process.
+
+## Trusted commit boundary
+
+Only the outer executor can commit or push. Before commit it rechecks the actual diff and
+publication policy. Repository-controlled Git hooks are disabled with
+`core.hooksPath=/dev/null` in the trusted commit stage.
+
+The initial agent commit includes immutable metadata trailers and the PR body contains a
+base64 task metadata marker. Review Repair later requires the PR author, metadata hash,
+target repository, branch, and commit history to agree.
+
+## Review Repair flow
+
+Review Repair remains separate from initial dispatch.
 
 ```text
 same-repo pull_request_review:submitted
-  OR scheduled cross-repo scan (one target-scoped App token per allowlisted repo)
-  -> hosted dispatcher: feature/config/actor/allowlist/metadata validation
-  -> hosted dispatcher: trusted PR start marker (dedupe + bounded reservation)
-  -> workflow_dispatch accepted by GitHub; hosted job exits without polling
-  -> self-hosted executor: authorize target before credential creation
-  -> self-hosted executor: re-fetch review and revalidate reservation/head/SHA
-  -> target checkout with persist-credentials:false + double identity guard
-  -> resume-review-branch.sh (exact existing branch only)
-  -> build-review-prompt.sh (review body delimited as untrusted data)
-  -> OpenCode / tests / git diff --check
-  -> commit-review-repair.sh (same branch push only; no PR create/merge path)
-  -> target PR + source Issue feedback and executor timings
+  OR scheduled cross-repo scan
+  → GitHub-hosted dispatcher validates feature/config/actor/allowlist/metadata
+  → reserve review ID + attempt using trusted bot marker
+  → dispatch self-hosted executor and exit
+  → executor re-checks kill switch authoritatively
+  → authorize target before write credential creation
+  → re-fetch PR/review and validate reservation/head SHA
+  → checkout exact validated head with persist-credentials:false
+  → resume exact existing agent/<task_id> branch
+  → isolated .git-free OpenCode repair + tests
+  → trusted patch validation/import
+  → trusted same-branch non-force push
+  → completed/failed marker + timing feedback
 ```
 
-Cross-repo reviews are polled by the central default-branch workflow because a
-`pull_request_review` event is delivered only to workflows in the repository
-that owns the PR. Polling preserves the no-target-workflow architecture and
-still uses one target-scoped, short-lived App token per matrix job. One eligible
-review is dispatched per target per poll. The poller and dispatcher never wait
-for an executor run or an agent process. Its cross-repo App token has contents
-read and pull-request write only; contents write is requested only by the
-self-hosted executor after it repeats target authorization.
+Review Repair never calls the initial `prepare-branch.sh` duplicate path and never creates
+or merges another PR.
 
-The executor `runs-on` value is exactly
-`fromJSON(vars.REVIEW_REPAIR_RUNNER_LABELS)`. The validated JSON label array
-must contain `self-hosted` and `review-repair`; missing or malformed
-configuration stops dispatch. There is intentionally no hosted fallback.
+### Review Repair invariants
 
-## Trigger / event
-
-| trigger | 条件 | 備考 |
-|---------|------|------|
-| `issues: labeled` | label が `opencode-run` または `agent:ready` | Issue 作成だけでは実行しない（Phase 10） |
-| `workflow_dispatch` | inputs: target_repository / task_id / title / prompt / runner_mode | 手動投入。runner_mode は既定 github |
-| `pull_request_review: submitted` | same-repo + `CHANGES_REQUESTED` | review repair; feature-gated |
-| `schedule` / review workflow dispatch | allowlisted cross-repo PR scan | review repair; feature-gated |
-
-job レベルの `if` で label / event を限定。`codex-run` のような他 label では workflow は選択されない（過去の silent-skip を排除）。
-
-## Permissions（最小限）
-
-```yaml
-permissions:
-  contents: write        # branch push / commit
-  issues: write          # Issue へのフィードバックコメント
-  pull-requests: write   # PR 作成
-```
-
-## Secrets
-
-`OPENROUTER_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY` は repo secrets として
-必要な場合だけ登録する。agent step には選択された一つだけを
-`AGENT_CREDENTIAL_VALUE` として渡し、`run-agent.sh` が対応する CLI variable に
-変換する。値はログ・summary・prompt・artifactへ出力しない。
-
-### Workflow-file publication credential boundary
-
-GitHub rejects a contents-write `GITHUB_TOKEN` or GitHub App installation token
-when it tries to create or update `.github/workflows/**` without the App's
-separate **Workflows: write** repository permission. This is why a normal Agent
-Dispatch push cannot publish a workflow edit in the current configuration.
-
-For the isolated self-hosted same-repository path, the trusted outer executor
-uses `classify-workflow-push.sh` *after* the agent and its tests finish. It
-rechecks target/remote identity, `agent/<task_id>` branch, expected base branch,
-and every repository-relative diff path. It selects the push credential solely
-from the actual Git diff:
-
-| dispatch case | publication behavior |
-|---|---|
-| same repository, no `.github/workflows/**` diff | existing normal dispatch credential |
-| same repository, workflow diff | a short-lived GitHub App installation token with Contents, Pull requests, and Workflows all set to write |
-| cross repository, no workflow diff | existing target-scoped App token |
-| cross repository, workflow diff | rejected as `CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED` |
-
-The late workflow token is requested by `actions/create-github-app-token` only
-when the validated same-repository diff requires it. It exists only in the
-trusted commit/push step, temporarily replaces the checkout's Git HTTP header
-for `git push`, and is removed immediately afterwards. It is never passed to
-OpenCode, repository tests in the isolated container, Docker environment or
-mounts, task JSON, prompt text, artifacts, logs, or step summaries.
-
-The existing App must be installed on `sironekotoro/github-actions-test` with
-**Contents: write**, **Pull requests: write**, and **Workflows: write**. The
-workflow deliberately does not change App permissions itself. Until an operator
-grants that permission, a workflow diff fails before push with
-`WORKFLOW_PUSH_AUTH_NOT_CONFIGURED` and explains that agent execution succeeded
-but trusted workflow publication is not configured. No broad classic PAT is
-used, and the cross-repository App-token request remains unchanged (it does not
-ask for Workflows permission).
-
-`runner_mode=github` retains its normal same-repository and cross-repository
-paths for ordinary files. Workflow-file publication is intentionally fail-closed
-there because it lacks the isolated trusted outer-wrapper boundary; use explicit
-`runner_mode=self-hosted` for the supported self-modification path.
-
-## Repository identity guard（中核）
-
-`scripts/guard-repo.sh` が以下を canonical 形式（`owner/name`、小文字、`.git` 除去）で比較:
-
-1. payload の `target_repository`
-2. `GITHUB_REPOSITORY`（workflow が走っている repo）
-3. checkout 済み `git remote get-url origin`
-
-いずれかが不一致なら `REPOSITORY_IDENTITY_MISMATCH` を failure category に記録し **agent は起動しない**。
-agent step は `steps.guard.outputs.result == 'pass'` のときのみ実行される。
-
-## Prompt-side guard（自動挿入）
-
-`scripts/build-agent-prompt.sh` が prompt 冒頭へ以下を自動挿入:
-
-```
-TARGET REPOSITORY:
-sironekotoro/github-actions-test
-
-You MUST verify before making any changes:
-  pwd / git remote -v / git branch / git branch --show-current / git status
-
-If the checked-out repository is NOT the TARGET REPOSITORY above,
-STOP WITHOUT MAKING CHANGES and report REPOSITORY_IDENTITY_MISMATCH.
-
-If an AGENTS.md file exists in this repository, read it first and follow it.
-```
-
-手入力に依存しない（Phase 4 / 19 / 20）。
-
-Task/review text is delimited as untrusted data. The trusted prompt instructions
-also require the agent to run `git status --short` and `git diff --check` before
-reporting completion. Any whitespace error, including trailing whitespace
-introduced by the task, must be fixed and checked again until
-`git diff --check` exits successfully. The trusted outer executor independently
-runs `git apply --check --whitespace=error` and rejects invalid returned patches;
-it never sanitizes or rewrites them.
+- only `CHANGES_REQUESTED`
+- authorized reviewer required
+- same PR/base/head repository identity required
+- bot-authored Agent Dispatch PR required
+- immutable task metadata marker required
+- exact `agent/<task_id>` head branch required
+- review must target the current head SHA
+- exact branch SHA is rechecked before resume and before push
+- duplicate review IDs are ignored/rejected
+- attempts are bounded by `REVIEW_REPAIR_MAX` (default 3)
+- no force push
+- no auto-merge
+- repository tests and hooks never receive the push credential
 
 ## Authorization
 
-- Issue 経由: Issue author **と** label を付けた sender の両方が `ACTOR_ALLOWLIST`（既定 `sironekotoro`）に含まれること。
-- dispatch 経由: `github.actor` が含まれること。
-- 一致しない場合 `UNAUTHORIZED_ACTOR` で停止（Phase 30）。
+### Actor authorization
 
-## Injection safety
+Issue dispatch requires both the issue author and labeler to be on the actor allowlist.
+Manual workflow dispatch requires `github.actor` to be allowed.
 
-- Issue body / prompt を shell へ直接展開しない。
-- `parse-task.mjs` が JSON を解析し `task.json` に保存。
-- `run-agent.sh` は prompt をファイルから `PROMPT="$(<file)"` で読み、adapterへ**単一の quoted argument**として渡す。CLI invocationは上記matrixに固定する。
-- prompt 本体はログに出力しない（bytes / sha256 / title のみ。Phase 18）。
+### Target authorization
 
-## Duplicate guard
+`config/allowed-repositories.txt` is the committed target allowlist. Target identity is
+canonicalized to lowercase `owner/name` and checked before cross-repository credential
+creation or checkout.
 
-- `concurrency` group: `agent-dispatch-${{ issue.number || task_id }}`, `cancel-in-progress: false`
-- `prepare-branch.sh`: 同名ブランチ `agent/<task_id>` が origin に存在、または open PR が存在すれば `TASK_ALREADY_RUNNING` で停止（Phase 11）。
+Public dispatcher policy: do not add private target names to the public allowlist.
 
-Review repair never calls `prepare-branch.sh`. `resume-review-branch.sh` is a
-separate narrow path that requires the exact existing `agent/<task_id>` PR head
-branch and reviewed head SHA. Before invoking the agent, a bot-authored PR
-comment records the immutable review ID and attempt number. Any trusted marker
-for that review ID prevents re-delivery. Three distinct started markers exhaust
-the default bound.
+### Cross-repository credential
+
+Cross-repository normal dispatch uses a short-lived GitHub App installation token scoped
+to the one authorized target repository with Contents and Pull requests permissions.
+Workflow-file changes remain prohibited; the token request does not ask for Workflows
+permission.
+
+## Prompt boundary
+
+Task and review bodies are delimited as untrusted data and cannot override authoritative
+instructions.
+
+For isolated initial dispatch, the prompt states that the outer executor already verified
+repository identity and that `.git` is intentionally absent. It uses `/baseline` vs
+`/workspace` for final whitespace validation instead of repository Git metadata.
+
+For GitHub-hosted dry-run inspection only, the legacy repository Git checks may still be
+used because no coding agent is invoked and no mutation follows.
+
+## Duplicate and race protection
+
+Initial dispatch:
+
+- workflow concurrency group
+- remote `agent/<task_id>` existence check
+- open PR check
+
+Review Repair:
+
+- per-PR dispatcher/executor concurrency groups
+- trusted reservation markers
+- reviewed head SHA revalidation
+- remote SHA recheck immediately before repair commit/push
+- commit-history repair marker consistency checks
 
 ## Failure classification
 
-| category | 発生時 |
-|----------|--------|
-| `INVALID_PAYLOAD` | JSON 解析不能 / 必須フィールド欠落 |
-| `REPOSITORY_IDENTITY_MISMATCH` | target と actual/remote の不一致 |
-| `UNAUTHORIZED_ACTOR` | actor が allowlist 外 |
-| `TASK_ALREADY_RUNNING` | duplicate（ブランチ/PR 存在） |
-| `DIRTY_WORKING_TREE` | agent 開始時に作業ツリーが汚れている |
-| `CHECKOUT_FAILED` | branch 作成 / checkout 失敗 |
-| `AGENT_START_FAILED` | opencode 未導入・起動失敗 |
-| `AGENT_PATCH_INVALID` | agent 完了後に返された patch が trusted validation/import を通過しない |
-| `MODEL_API_FAILED` | opencode が非ゼロ終了（transient retry 消化後） |
-| `AGENT_TIMEOUT` | timeout 強制終了（exit 124） |
-| `TEST_FAILED` | npm test / diff --check 失敗 |
-| `PUSH_FAILED` / `PR_CREATE_FAILED` | push / PR 作成失敗 |
-| `WORKFLOW_PUSH_AUTH_NOT_CONFIGURED` | agent succeeded, but same-repo workflow publication lacks the required trusted App permission/token |
-| `CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED` | cross-repo diff changes `.github/workflows/**`; this capability is intentionally not enabled |
-| `REPAIR_METADATA_INVALID` | PR marker/task/review metadata malformed or outside input bounds |
-| `REPAIR_PR_IDENTITY_MISMATCH` | PR target/head/dispatcher/bot principal mismatch |
-| `REPAIR_BRANCH_MISMATCH` | head/base/default branch or reviewed SHA mismatch |
-| `REPAIR_LIMIT_REACHED` | configured per-PR repair attempt limit reached |
-| `REPAIR_STATE_WRITE_FAILED` | review ID start/final marker could not be persisted |
-| `REPAIR_EXECUTOR_UNAVAILABLE` | self-hosted executor labels missing or unsafe |
-| `REPAIR_EXECUTOR_DISPATCH_FAILED` | GitHub did not accept executor workflow dispatch |
-| `REPAIR_EXECUTOR_REQUEST_INVALID` | executor identifiers/ref/SHA failed input validation |
+Important categories include:
 
-単一の `exit 1` ではなく、`$RUNNER_TEMP/failure_category` に category を書き、Issue コメント・summary で報告する（Phase 16）。
+| category | meaning |
+|---|---|
+| `INVALID_PAYLOAD` | malformed task / unsupported live GitHub-hosted mode |
+| `REPOSITORY_IDENTITY_MISMATCH` | expected target/remote/dispatcher mismatch |
+| `UNAUTHORIZED_ACTOR` | actor/reviewer not allowlisted |
+| `TASK_ALREADY_RUNNING` | duplicate branch/open PR |
+| `DIRTY_WORKING_TREE` | unexpected dirty checkout |
+| `AGENT_EXECUTOR_UNAVAILABLE` | required isolated executor configuration unavailable |
+| `AGENT_UNKNOWN` | unsupported agent |
+| `AGENT_AUTH_FAILED` | selected credential invalid/missing/unsupported |
+| `AGENT_UNAVAILABLE` | selected CLI unavailable |
+| `AGENT_TIMEOUT` | bounded agent runtime exceeded |
+| `MODEL_API_FAILED` | non-auth provider/agent failure after retry policy |
+| `AGENT_PATCH_INVALID` | filesystem patch failed trusted validation/import |
+| `TEST_FAILED` | repository or diff validation failed |
+| `WORKFLOW_PUSH_AUTH_NOT_CONFIGURED` | same-repo agent workflow-file publication blocked |
+| `CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED` | cross-repo agent workflow-file publication blocked |
+| `PUSH_FAILED` / `TARGET_PUSH_FAILED` | trusted push failed |
+| `PR_CREATE_FAILED` / `TARGET_PR_CREATE_FAILED` | trusted PR creation failed |
+| `REPAIR_*` | review-repair metadata/identity/branch/state/dispatch failures |
 
-## Model configuration
+## Operator controls
 
-- 既定: `openrouter/deepseek/deepseek-v4-flash`
-- `OPENROUTER_MODEL`（workflow env / dispatch input `model`）で上書き可能。workflow の編集なしで変更できる（Phase 8）。
-- 大規模な model routing は作らない。
+- `CROSS_REPO_ENABLED=true|false`
+- `REVIEW_REPAIR_ENABLED=true|false`
+- `REVIEW_REPAIR_MAX=1..10`
+- `REVIEW_REPAIR_MODEL=...`
+- `REVIEW_REPAIR_RUNNER_LABELS=["self-hosted","review-repair",...]`
 
-## Runtime / cost guard
-
-- Initial Issue dispatch remains unchanged: job `timeout-minutes: 30`、agent step
-  は `AGENT_MAX_RUNTIME`（既定 10 分）を `timeout` で強制。
-- Review hosted control-plane jobs are bounded to 3–5 minutes and only scan,
-  validate, reserve, and submit `workflow_dispatch`.
-- The review executor is self-hosted, bounded to 45 minutes, and retains the
-  agent runtime limit. OpenCode auto-install is disabled there; the runner must
-  be provisioned before enabling the feature.
-- `AGENT_MAX_ATTEMPTS`（既定 2）。429 / rate limit / network 系の transient のみ bounded retry。logic failure は retry しない（Phase 34 / 35）。
-- agent は 1 task = 1 fresh session（Phase 39）。
-
-## Default branch
-
-`master` 固定にしない。`scripts/lib/repo.sh::detect_default_branch` が origin/HEAD → GitHub API → プローブ（master/main）の順に検出。zengin-pl 等の `master` repo でも動作（Phase 14 / Test 5-6）。
-
-## Root cause of the old `No jobs were run`
-
-過去構成では `codex-issue-worker.yml`（`if: label == 'codex-run'`）と `opencode-hosted-poc.yml`（`if: label == 'opencode-run'`）が **同じ `issues: labeled` イベント** を購読していた。`opencode-run` label で起動すると Codex worker は job レベルの `if` で **silent-skip** され、成果物の無い「skipped」run（= 実質 `No jobs were run`）が残った。
-
-対策:
-- 旧 2 workflow を削除し `agent-dispatch.yml` へ一本化。
-- label 条件を job レベルで明示し、不適合 label では workflow 自体が選択されない。
-- 失敗時は必ず failure category を出す。
-
-## Remaining risks
-
-- API-backed agent は provider API に依存。モデル停止・API非ゼロ終了時は `MODEL_API_FAILED`、timeout時は `AGENT_TIMEOUT` になる。
-- GitHub-hosted runner の IP は可変（repo が public の場合、他者の workflow 利用は actor allowlist で防ぐ）。
-- Cross-repo review detection is polling, so repair start can lag by up to the
-  schedule interval. It never broadens the App token to multiple target repos.
-- A dispatched executor workflow can remain queued if no matching self-hosted
-  runner is online. The hosted dispatcher has already exited; operators must
-  monitor the executor run and runner fleet separately.
-- PR state markers are auditable GitHub-native comments. A maintainer who can
-  delete those comments can alter attempt accounting; branch concurrency and
-  commit trailers still prevent simultaneous mutation and duplicate successful
-  pushes.
+The self-hosted label set is validated before agent execution. There is no GitHub-hosted
+fallback for coding-agent work.

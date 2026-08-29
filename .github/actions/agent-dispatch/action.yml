@@ -1,8 +1,8 @@
 name: Run Agent Dispatch
-description: Run the authenticated Agent Dispatch pipeline after the dispatcher checkout.
+description: Run the authenticated Agent Dispatch pipeline in the isolated self-hosted executor.
 inputs:
   execution_mode:
-    description: github or self-hosted
+    description: Must be self-hosted; GitHub-hosted execution is dry-run only in the workflow and never invokes this action.
     required: true
   github_token:
     description: Dispatcher repository workflow token
@@ -17,19 +17,19 @@ inputs:
     description: GitHub App private key for cross-repository dispatch
     required: false
   openrouter_api_key:
-    description: OpenRouter API key (for OpenCode agent)
+    description: Legacy OpenRouter API key input
     required: false
   openrouter_model:
     description: Model override
     required: true
   openai_api_key:
-    description: OpenAI API key (for Codex agent)
+    description: Legacy OpenAI API key input
     required: false
   anthropic_api_key:
-    description: Anthropic API key (for Claude Code agent)
+    description: Legacy Anthropic API key input
     required: false
   agent_credential:
-    description: Selected API credential; only this value is passed to the agent executor
+    description: Selected API credential; only this value is passed to the isolated agent executor
     required: false
   agent:
     description: 'Coding agent: opencode (default), codex, or claude-code'
@@ -38,6 +38,13 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Require isolated self-hosted execution
+      shell: bash
+      run: |
+        source scripts/lib/common.sh
+        [ "${{ inputs.execution_mode }}" = self-hosted ] \
+          || fail_with "$CAT_AGENT_EXECUTOR_UNAVAILABLE" "non-dry-run Agent Dispatch must use the isolated self-hosted executor"
+
     - name: Authorize actor
       id: authorize
       shell: bash
@@ -81,9 +88,6 @@ runs:
         GITHUB_REPOSITORY: ${{ github.repository }}
       run: bash scripts/guard-repo.sh
 
-    # Keep trusted dispatcher control code on the workflow ref. Unlike the
-    # GitHub-hosted legacy path, self-hosted execution must not switch that
-    # checkout to the target's default branch before it invokes local scripts.
     - name: Checkout same-repo target separately
       id: same_target_checkout
       if: steps.target.outputs.mode == 'same' && steps.same_guard.outputs.result == 'pass'
@@ -205,39 +209,15 @@ runs:
 
     - name: Build isolated Agent Dispatch images
       id: isolated_images
-      if: inputs.execution_mode == 'self-hosted' && (steps.prep_same.outputs.result == 'pass' || steps.prep_cross.outputs.result == 'pass')
+      if: steps.prep_same.outputs.result == 'pass' || steps.prep_cross.outputs.result == 'pass'
       shell: bash
       run: |
         docker build --tag "agent-dispatch-agent:$GITHUB_RUN_ID" --file docker/review-repair-agent.Dockerfile .
         docker build --tag "agent-dispatch-egress:$GITHUB_RUN_ID" --file docker/review-repair-egress.Dockerfile .
 
-    - name: Run same-repo coding agent on GitHub-hosted runner
-      id: agent_same_hosted
-      if: inputs.execution_mode == 'github' && steps.prep_same.outputs.result == 'pass'
-      working-directory: target
-      shell: bash
-      env:
-        TASK_FILE: ${{ runner.temp }}/task.json
-        AGENT_CREDENTIAL_VALUE: ${{ inputs.agent_credential || (steps.parse.outputs.agent == 'opencode' && inputs.openrouter_api_key || steps.parse.outputs.agent == 'codex' && inputs.openai_api_key || steps.parse.outputs.agent == 'claude-code' && inputs.anthropic_api_key || '') }}
-        AGENT_HOME: ${{ runner.temp }}/agent-home
-        OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
-      run: bash ../scripts/run-agent.sh
-
-    - name: Run cross-repo coding agent on GitHub-hosted runner
-      id: agent_cross_hosted
-      if: inputs.execution_mode == 'github' && steps.prep_cross.outputs.result == 'pass'
-      working-directory: target
-      shell: bash
-      env:
-        TASK_FILE: ${{ runner.temp }}/task.json
-        AGENT_CREDENTIAL_VALUE: ${{ inputs.agent_credential || (steps.parse.outputs.agent == 'opencode' && inputs.openrouter_api_key || steps.parse.outputs.agent == 'codex' && inputs.openai_api_key || steps.parse.outputs.agent == 'claude-code' && inputs.anthropic_api_key || '') }}
-        AGENT_HOME: ${{ runner.temp }}/agent-home
-        OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
-      run: bash ../scripts/run-agent.sh
-
     - name: Run same-repo coding agent in isolated container
       id: agent_same_isolated
-      if: inputs.execution_mode == 'self-hosted' && steps.isolated_images.outcome == 'success' && steps.prep_same.outputs.result == 'pass'
+      if: steps.isolated_images.outcome == 'success' && steps.prep_same.outputs.result == 'pass'
       working-directory: target
       shell: bash
       env:
@@ -249,7 +229,7 @@ runs:
 
     - name: Run cross-repo coding agent in isolated container
       id: agent_cross_isolated
-      if: inputs.execution_mode == 'self-hosted' && steps.isolated_images.outcome == 'success' && steps.prep_cross.outputs.result == 'pass'
+      if: steps.isolated_images.outcome == 'success' && steps.prep_cross.outputs.result == 'pass'
       working-directory: target
       shell: bash
       env:
@@ -259,11 +239,9 @@ runs:
         AGENT_MAX_RUNTIME: ${{ steps.parse.outputs.max_runtime || '10' }}
       run: bash ../scripts/run-agent-dispatch-container.sh
 
-    # Classify only after the agent has completed. This trusted dispatcher
-    # script examines the checked-out diff, not task/prompt content.
-    - name: Classify same-repo workflow publication
+    - name: Validate same-repo publication policy
       id: workflow_same
-      if: steps.agent_same_hosted.outputs.result == 'pass' || steps.agent_same_isolated.outputs.result == 'pass'
+      if: steps.agent_same_isolated.outputs.result == 'pass'
       working-directory: target
       shell: bash
       env:
@@ -273,9 +251,9 @@ runs:
         DISPATCHER_REPOSITORY: ${{ github.repository }}
       run: bash ../scripts/classify-workflow-push.sh
 
-    - name: Classify cross-repo workflow publication
+    - name: Validate cross-repo publication policy
       id: workflow_cross
-      if: steps.agent_cross_hosted.outputs.result == 'pass' || steps.agent_cross_isolated.outputs.result == 'pass'
+      if: steps.agent_cross_isolated.outputs.result == 'pass'
       working-directory: target
       shell: bash
       env:
@@ -285,33 +263,9 @@ runs:
         DISPATCHER_REPOSITORY: ${{ github.repository }}
       run: bash ../scripts/classify-workflow-push.sh
 
-    # This token is intentionally created only after the actual validated diff
-    # requires it. The app must be installed on this dispatcher repository
-    # with Contents, Pull requests, and Workflows set to write.
-    - name: Create same-repo workflow publication token
-      id: workflow_push_token
-      if: steps.workflow_same.outputs.workflow_change == 'true'
-      continue-on-error: true
-      uses: actions/create-github-app-token@v3
-      with:
-        app-id: ${{ inputs.app_id }}
-        private-key: ${{ inputs.app_private_key }}
-        owner: ${{ steps.target.outputs.target_owner }}
-        repositories: ${{ steps.target.outputs.target_name }}
-        permission-contents: write
-        permission-pull-requests: write
-        permission-workflows: write
-
-    - name: Fail closed when workflow publication is not configured
-      if: steps.workflow_same.outputs.workflow_change == 'true' && steps.workflow_push_token.outcome != 'success'
-      shell: bash
-      run: |
-        source scripts/lib/common.sh
-        fail_with "$CAT_WORKFLOW_PUSH_AUTH_NOT_CONFIGURED" "agent execution succeeded, but workflow-file publication requires the configured GitHub App to have Contents, Pull requests, and Workflows write permission on this repository"
-
-    - name: Commit, push, and create same-repo ordinary PR
+    - name: Commit, push, and create same-repo PR
       id: commit_same
-      if: (steps.agent_same_hosted.outputs.result == 'pass' || steps.agent_same_isolated.outputs.result == 'pass') && steps.workflow_same.outputs.workflow_change != 'true'
+      if: steps.agent_same_isolated.outputs.result == 'pass' && steps.workflow_same.outputs.result == 'pass'
       working-directory: target
       shell: bash
       env:
@@ -321,37 +275,15 @@ runs:
         OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
         DISPATCH_MODE: same
         DISPATCHER_REPOSITORY: ${{ github.repository }}
-        AGENT_TESTS_ALREADY_RAN: ${{ inputs.execution_mode == 'self-hosted' && 'true' || 'false' }}
-        # The isolated path must not execute a target-provided Git hook in the
-        # trusted outer executor. Git ignores these values for hosted mode.
-        GIT_CONFIG_COUNT: ${{ inputs.execution_mode == 'self-hosted' && '1' || '0' }}
-        GIT_CONFIG_KEY_0: core.hooksPath
-        GIT_CONFIG_VALUE_0: /dev/null
-      run: bash ../scripts/commit-push-pr.sh
-
-    - name: Commit, push, and create same-repo workflow PR
-      id: commit_same_workflow
-      if: steps.workflow_same.outputs.workflow_change == 'true' && steps.workflow_push_token.outcome == 'success'
-      working-directory: target
-      shell: bash
-      env:
-        TASK_FILE: ${{ runner.temp }}/task.json
-        GH_TOKEN: ${{ steps.workflow_push_token.outputs.token }}
-        DEFAULT_BRANCH: ${{ steps.prep_same.outputs.default_branch }}
-        OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
-        DISPATCH_MODE: same
-        DISPATCHER_REPOSITORY: ${{ github.repository }}
-        DISPATCH_PRINCIPAL: ${{ steps.workflow_push_token.outputs.app-slug }}[bot]
-        WORKFLOW_PUSH_MODE: workflow
-        AGENT_TESTS_ALREADY_RAN: ${{ inputs.execution_mode == 'self-hosted' && 'true' || 'false' }}
-        GIT_CONFIG_COUNT: ${{ inputs.execution_mode == 'self-hosted' && '1' || '0' }}
+        AGENT_TESTS_ALREADY_RAN: 'true'
+        GIT_CONFIG_COUNT: '1'
         GIT_CONFIG_KEY_0: core.hooksPath
         GIT_CONFIG_VALUE_0: /dev/null
       run: bash ../scripts/commit-push-pr.sh
 
     - name: Commit, push, and create cross-repo PR
       id: commit_cross
-      if: (steps.agent_cross_hosted.outputs.result == 'pass' || steps.agent_cross_isolated.outputs.result == 'pass') && steps.workflow_cross.outputs.workflow_change != 'true'
+      if: steps.agent_cross_isolated.outputs.result == 'pass' && steps.workflow_cross.outputs.result == 'pass'
       working-directory: target
       shell: bash
       env:
@@ -362,8 +294,8 @@ runs:
         DISPATCH_MODE: cross
         DISPATCHER_REPOSITORY: ${{ github.repository }}
         DISPATCH_PRINCIPAL: ${{ steps.app_token.outputs.app-slug }}[bot]
-        AGENT_TESTS_ALREADY_RAN: ${{ inputs.execution_mode == 'self-hosted' && 'true' || 'false' }}
-        GIT_CONFIG_COUNT: ${{ inputs.execution_mode == 'self-hosted' && '1' || '0' }}
+        AGENT_TESTS_ALREADY_RAN: 'true'
+        GIT_CONFIG_COUNT: '1'
         GIT_CONFIG_KEY_0: core.hooksPath
         GIT_CONFIG_VALUE_0: /dev/null
       run: bash ../scripts/commit-push-pr.sh
@@ -376,27 +308,22 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
         ISSUE_NUMBER: ${{ github.event.issue.number }}
         AGENT_BRANCH: ${{ steps.prep_cross.outputs.branch || steps.prep_same.outputs.branch }}
-        PR_URL: ${{ steps.commit_cross.outputs.pr_url || steps.commit_same_workflow.outputs.pr_url || steps.commit_same.outputs.pr_url }}
-        PR_NUMBER: ${{ steps.commit_cross.outputs.pr_number || steps.commit_same_workflow.outputs.pr_number || steps.commit_same.outputs.pr_number }}
+        PR_URL: ${{ steps.commit_cross.outputs.pr_url || steps.commit_same.outputs.pr_url }}
+        PR_NUMBER: ${{ steps.commit_cross.outputs.pr_number || steps.commit_same.outputs.pr_number }}
       run: bash scripts/post-feedback.sh
 
     - name: Remove separate target checkout
       if: always()
       shell: bash
       run: |
-        # This checkout holds the outer executor's short-lived Git credential.
-        # It is separate from the runner's normal dispatcher worktree and must
-        # not persist under _work after a self-hosted dispatch.
         target_dir="$GITHUB_WORKSPACE/target"
         if [ -d "$target_dir" ] || [ -L "$target_dir" ]; then
           rm -rf -- "$target_dir"
         fi
 
     - name: Remove per-run isolated images
-      if: always() && inputs.execution_mode == 'self-hosted'
+      if: always()
       shell: bash
       run: |
-        # The tags are deterministically scoped to this workflow run. Ignore a
-        # missing image so this cleanup also covers partial image-build failures.
         docker image rm -f "agent-dispatch-agent:$GITHUB_RUN_ID" >/dev/null 2>&1 || true
         docker image rm -f "agent-dispatch-egress:$GITHUB_RUN_ID" >/dev/null 2>&1 || true

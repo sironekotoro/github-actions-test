@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run repository tests, then commit, push and create a PR for the agent's
 # changes on the target repository. Works in same-repo and cross-repo modes.
+# Agent-generated .github/workflows changes are never published automatically.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,41 +20,7 @@ default_branch="${DEFAULT_BRANCH:-master}"
 repo="$(canonicalize_repo "$(jq -r '.target_repository' "$TASK_FILE")")"
 dispatcher_repo="${DISPATCHER_REPOSITORY:-${GITHUB_REPOSITORY:-$repo}}"
 mode="${DISPATCH_MODE:-same}"
-workflow_push_mode="${WORKFLOW_PUSH_MODE:-normal}"
 run_url="${GITHUB_SERVER_URL:-https://github.com}/${dispatcher_repo}/actions/runs/${GITHUB_RUN_ID:-0}"
-
-workflow_push_auth_file=""
-restore_workflow_push_auth() {
-  [ -n "$workflow_push_auth_file" ] || return 0
-  git config --local --unset-all http.https://github.com/.extraheader >/dev/null 2>&1 || true
-  while IFS= read -r header || [ -n "$header" ]; do
-    git config --local --add http.https://github.com/.extraheader "$header"
-  done < "$workflow_push_auth_file"
-  rm -f -- "$workflow_push_auth_file"
-  workflow_push_auth_file=""
-}
-trap restore_workflow_push_auth EXIT
-
-configure_workflow_push_auth() {
-  local remote auth_header
-  remote="$(repo_remote_url)"
-  case "$remote" in
-    https://github.com/*) ;;
-    *) fail_with "$CAT_REPO_MISMATCH" "workflow publication remote is not github.com HTTPS" ;;
-  esac
-  [ -n "${GH_TOKEN:-}" ] \
-    || fail_with "$CAT_WORKFLOW_PUSH_AUTH_NOT_CONFIGURED" \
-      "workflow-file publication requires a trusted workflow-write GitHub App token"
-
-  workflow_push_auth_file="$(mktemp "${RUNNER_TEMP:-/tmp}/workflow-push-auth.XXXXXX")" \
-    || fail_with "$CAT_WORKFLOW_PUSH_AUTH_NOT_CONFIGURED" "could not stage trusted workflow push authentication"
-  chmod 600 "$workflow_push_auth_file"
-  git config --local --get-all http.https://github.com/.extraheader > "$workflow_push_auth_file" 2>/dev/null || true
-  git config --local --unset-all http.https://github.com/.extraheader >/dev/null 2>&1 || true
-  auth_header="Authorization: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
-  git config --local --add http.https://github.com/.extraheader "$auth_header"
-  unset auth_header
-}
 
 if [ "$(jq -r '.dry_run // false' "$TASK_FILE")" = true ]; then
   log_info "dry_run=true; skipping tests/commit/push/PR"
@@ -86,32 +53,18 @@ if [ -z "$(git status --porcelain)" ]; then
   exit 0
 fi
 
-# The trusted workflow step supplies this mode. It is checked again against the
-# actual post-agent diff so task text cannot force or suppress stronger auth.
+# Defense in depth: classify-workflow-push.sh already enforces this policy
+# before this script is called, but commit/push must independently reject an
+# agent-generated workflow diff if invoked directly or after a future refactor.
 workflow_push_validate_paths
-workflow_change=false
 if workflow_push_diff_contains_workflows; then
-  workflow_change=true
+  if [ "$mode" = cross ]; then
+    fail_with "$CAT_CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED" \
+      "agent-generated .github/workflows changes are intentionally unsupported"
+  fi
+  fail_with "$CAT_WORKFLOW_PUSH_AUTH_NOT_CONFIGURED" \
+    "agent-generated .github/workflows changes require manual trusted review and publication"
 fi
-case "$workflow_push_mode" in
-  normal)
-    if [ "$workflow_change" = true ]; then
-      fail_with "$CAT_WORKFLOW_PUSH_AUTH_NOT_CONFIGURED" \
-        "agent execution succeeded, but workflow-file publication requires a separately configured trusted credential"
-    fi
-    ;;
-  workflow)
-    [ "$mode" = same ] \
-      || fail_with "$CAT_CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED" \
-        "cross-repository workflow-file publication is intentionally unsupported"
-    [ "$workflow_change" = true ] \
-      || fail_with "$CAT_REPO_MISMATCH" \
-        "workflow credential was selected without a workflow-file diff"
-    ;;
-  *)
-    fail_with "$CAT_INVALID_PAYLOAD" "workflow push mode is invalid"
-    ;;
-esac
 
 git config user.name  'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -148,7 +101,8 @@ if ! git diff --cached --check >"$RUNNER_TEMP/git-check.log" 2>&1; then
   exit 1
 fi
 
-git commit -m "AI: ${title}" \
+# Never execute repository-controlled hooks in the trusted commit stage.
+git -c core.hooksPath=/dev/null commit -m "AI: ${title}" \
   -m "Agent-Task-Metadata-SHA256: $metadata_sha" \
   -m "Agent-Task-ID: $task_id" \
   -m "Agent-Target-Repository: $repo" >/dev/null 2>&1 || {
@@ -156,24 +110,13 @@ git commit -m "AI: ${title}" \
 }
 commit_sha="$(git rev-parse HEAD)"
 summary "| commit | \`$commit_sha\` |"
-
-if [ "$workflow_push_mode" = workflow ]; then
-  # The token exists only in this trusted outer step, after the isolated agent
-  # finished and after the actual diff/identity checks above. Replace the
-  # checkout's normal extraheader only for git push, then restore it.
-  configure_workflow_push_auth
-  summary "| push credential | trusted workflow-write App token |"
-else
-  summary "| push credential | normal dispatch credential |"
-fi
+summary "| push credential | normal dispatch credential; workflow-write escalation disabled |"
 
 if ! git push --set-upstream origin "$branch" >"$RUNNER_TEMP/push.log" 2>&1; then
-  restore_workflow_push_auth
   tail -n 20 "$RUNNER_TEMP/push.log" >&2
   [ "$mode" = cross ] && set_failure "$CAT_TARGET_PUSH" || set_failure "$CAT_PUSH"
   exit 1
 fi
-restore_workflow_push_auth
 log_info "pushed $branch to $repo"
 
 existing_pr="$(gh pr list --repo "$repo" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null || true)"
@@ -201,6 +144,7 @@ pr_body="$(printf '%s\n' \
   "" \
   "- Tests: pass" \
   "- \`git diff --check\`: pass" \
+  "- Agent-generated \`.github/workflows/**\` publication: prohibited" \
   "" \
   "<!-- agent-dispatch-task:v1:$metadata_b64 -->")"
 

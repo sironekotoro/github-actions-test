@@ -54,7 +54,7 @@ res="$(parse_dispatch "$unknown")"
 t "unknown agent fails closed" "1|INVALID_PAYLOAD" "$(echo "$res" | cut -d'|' -f1-2 | head -1)"
 
 # ============================================================
-# 2. runner_mode independent from agent (both in parse-task.mjs)
+# 2. runner_mode independent from agent, within safe execution policy
 # ============================================================
 
 parse_both() { # <json>
@@ -72,9 +72,9 @@ both1='{"task_id":"b1","target_repository":"sironekotoro/github-actions-test","t
 res="$(parse_both "$both1")"
 t "self-hosted + codex: agent is codex" "0|codex|self-hosted" "$res"
 
-both2='{"task_id":"b2","target_repository":"sironekotoro/github-actions-test","title":"t","prompt":"do it","runner_mode":"github","agent":"claude-code"}'
+both2='{"task_id":"b2","target_repository":"sironekotoro/github-actions-test","title":"t","prompt":"do it","runner_mode":"github","dry_run":true,"agent":"claude-code"}'
 res="$(parse_both "$both2")"
-t "github + claude-code: agent is claude-code" "0|claude-code|github" "$res"
+t "github dry-run + claude-code: agent is claude-code" "0|claude-code|github" "$res"
 
 # ============================================================
 # 3. Credential profile validation
