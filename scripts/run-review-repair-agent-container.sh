@@ -118,26 +118,30 @@ docker run --name "$agent_name" --init \
   --env OPENROUTER_MODEL="${OPENROUTER_MODEL:-}" \
   --env AGENT_AUTO_INSTALL=false \
   "$agent_image" bash -ceu '
+    selected_credential="${OPENROUTER_API_KEY:-}"
     bash /opt/review-repair-runner/run-agent.sh
     # Tests are untrusted repository code too; they must not inherit the API key.
     unset OPENROUTER_API_KEY
     if [ -f package.json ]; then
       npm test
     fi
+    # Prepare a bounded diagnostic copy while the raw log is still confined to
+    # the disposable container. Only this redacted copy can cross to the host.
+    source /opt/review-repair-runner/lib/common.sh
+    redacted_agent_log_tail /tmp/agent.log "$selected_credential" /runtime/agent-prompt.txt \
+      2>/tmp/agent-redacted.log
+    unset selected_credential
   '
 container_status=$?
 set -e
 agent_finished_epoch="$(date +%s)"
 agent_runtime_seconds=$((agent_finished_epoch - agent_started_epoch))
 
-agent_log="$agent_root/agent.log"
-if [ "$container_status" -eq 0 ]; then
-  docker cp "$agent_name:/tmp/agent.log" "$agent_log" >/dev/null 2>&1 || true
-fi
-docker rm -f "$agent_name" >/dev/null 2>&1 || true
-
 echo "runtime_seconds=$agent_runtime_seconds" >> "${GITHUB_OUTPUT:-/dev/null}"
-[ "$container_status" -eq 0 ] || exit "$container_status"
+if [ "$container_status" -ne 0 ]; then
+  docker rm -f "$agent_name" >/dev/null 2>&1 || true
+  exit "$container_status"
+fi
 
 # An agent-created .git is never importable: it could otherwise smuggle Git
 # config or hooks into the trusted outer commit/push stage.
@@ -154,6 +158,16 @@ set +e
 ) > "$patch_file"
 diff_status=$?
 set -e
+
+# A successful no-op is the only case that needs the agent tail. Copy only the
+# already-redacted bounded diagnostic; raw /tmp/agent.log never leaves Docker.
+agent_log=""
+if [ "$diff_status" -eq 0 ]; then
+  agent_log="$agent_root/agent-redacted.log"
+  docker cp "$agent_name:/tmp/agent-redacted.log" "$agent_log" >/dev/null 2>&1 || true
+fi
+docker rm -f "$agent_name" >/dev/null 2>&1 || true
+
 apply_agent_patch "$target_dir" "$patch_file" "$diff_status" "$agent_log" "${OPENROUTER_API_KEY:-}" "$prompt_file"
 
 summary "| agent isolation | Docker; non-root; read-only root; OpenRouter-only egress; no host credentials, .git, or Docker socket |"
