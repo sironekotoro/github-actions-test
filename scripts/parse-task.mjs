@@ -9,6 +9,12 @@ import fs from "node:fs";
 import path from "node:path";
 
 const REQUIRED = ["task_id", "target_repository", "title", "prompt"];
+const MAX_TASK_ID = 128;
+const MAX_TARGET_REPOSITORY = 200;
+const MAX_TITLE = 200;
+const MAX_PROMPT_BYTES = 65536;
+const MAX_MODEL = 256;
+const MAX_RUNTIME_MINUTES = 45;
 
 function die(message) {
   process.stderr.write(`INVALID_PAYLOAD: ${message}\n`);
@@ -34,6 +40,74 @@ function extractJson(body) {
   die("could not parse a JSON task payload from the body");
 }
 
+function requireString(value, field) {
+  if (typeof value !== "string") die(`${field} must be a string`);
+  return value;
+}
+
+function normalizeSingleLine(value, field, maxLength) {
+  const text = requireString(value, field).trim();
+  if (!text) die(`missing required field: ${field}`);
+  if (text.length > maxLength) die(`${field} is too long`);
+  if (/[\u0000-\u001f\u007f]/u.test(text)) die(`${field} must be a single printable line`);
+  return text;
+}
+
+function normalizeTaskId(value) {
+  const taskId = normalizeSingleLine(value, "task_id", MAX_TASK_ID);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(taskId) || taskId.endsWith(".") || taskId.endsWith(".lock") || taskId.includes("..")) {
+    die("task_id contains unsafe branch-name characters");
+  }
+  return taskId;
+}
+
+function normalizeTargetRepository(value) {
+  const repository = normalizeSingleLine(value, "target_repository", MAX_TARGET_REPOSITORY);
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository)) {
+    die("target_repository must be owner/name");
+  }
+  return repository;
+}
+
+function normalizeTitle(value) {
+  return normalizeSingleLine(value, "title", MAX_TITLE);
+}
+
+function normalizePrompt(value) {
+  const prompt = requireString(value, "prompt").trim();
+  if (!prompt) die("missing required field: prompt");
+  if (prompt.includes("\u0000")) die("prompt must not contain NUL bytes");
+  if (Buffer.byteLength(prompt, "utf8") > MAX_PROMPT_BYTES) die("prompt is too large");
+  return prompt;
+}
+
+function normalizeRequestedModel(raw) {
+  const requested = raw.requested_model;
+  const dispatchModel = raw.model;
+  if (requested !== undefined && requested !== null && requested !== "" &&
+      dispatchModel !== undefined && dispatchModel !== null && dispatchModel !== "" &&
+      String(requested) !== String(dispatchModel)) {
+    die("requested_model and model disagree");
+  }
+  const value = requested !== undefined && requested !== null && requested !== "" ? requested : dispatchModel;
+  if (value === undefined || value === null || value === "") return "";
+  const model = normalizeSingleLine(value, "requested_model", MAX_MODEL);
+  if (!/^[A-Za-z0-9._:/@+-]+$/u.test(model)) die("requested_model contains unsupported characters");
+  return model;
+}
+
+function normalizeMaxRuntime(value) {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value !== "string" && typeof value !== "number") die("max_runtime must be an integer number of minutes");
+  const text = String(value).trim();
+  if (!/^[0-9]+$/u.test(text)) die("max_runtime must be an integer number of minutes");
+  const minutes = Number(text);
+  if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > MAX_RUNTIME_MINUTES) {
+    die(`max_runtime must be between 1 and ${MAX_RUNTIME_MINUTES} minutes`);
+  }
+  return String(minutes);
+}
+
 function normalizeBoolean(value) {
   if (value === true || value === "true") return true;
   if (value === false || value === "false" || value === undefined || value === null || value === "") return false;
@@ -42,14 +116,16 @@ function normalizeBoolean(value) {
 
 function normalizeRunnerMode(value) {
   if (value === undefined || value === null || String(value).trim() === "") return "self-hosted";
-  const mode = String(value).trim();
+  if (typeof value !== "string") die("runner_mode must be github or self-hosted");
+  const mode = value.trim();
   if (mode === "github" || mode === "self-hosted") return mode;
   die("runner_mode must be github or self-hosted");
 }
 
 function normalizeAgent(value) {
   if (value === undefined || value === null || String(value).trim() === "") return "opencode";
-  const agent = String(value).trim().toLowerCase();
+  if (typeof value !== "string") die("agent must be opencode, codex, or claude-code");
+  const agent = value.trim().toLowerCase();
   if (!["opencode", "codex", "claude-code"].includes(agent)) {
     die("agent must be opencode, codex, or claude-code");
   }
@@ -59,25 +135,30 @@ function normalizeAgent(value) {
 function normalize(raw, source) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) die("payload must be a JSON object");
   for (const field of REQUIRED) {
-    const v = raw[field];
-    if (v === undefined || v === null || String(v).trim() === "") die(`missing required field: ${field}`);
+    if (raw[field] === undefined || raw[field] === null) die(`missing required field: ${field}`);
   }
-  const prompt = String(raw.prompt).trim();
-  if (!prompt) die("missing required field: prompt");
+
+  const taskId = normalizeTaskId(raw.task_id);
+  const targetRepository = normalizeTargetRepository(raw.target_repository);
+  const title = normalizeTitle(raw.title);
+  const prompt = normalizePrompt(raw.prompt);
+  const requestedModel = normalizeRequestedModel(raw);
+  const maxRuntime = normalizeMaxRuntime(raw.max_runtime);
   const dryRun = normalizeBoolean(raw.dry_run);
   const runnerMode = normalizeRunnerMode(raw.runner_mode);
   if (runnerMode === "github" && !dryRun) {
     die("runner_mode=github is dry-run only; agent execution requires self-hosted isolation");
   }
+
   return {
-    task_id: String(raw.task_id).trim(),
-    target_repository: String(raw.target_repository).trim(),
+    task_id: taskId,
+    target_repository: targetRepository,
     source,
-    title: String(raw.title).trim(),
+    title,
     prompt,
     created_at: new Date().toISOString(),
-    requested_model: raw.requested_model ? String(raw.requested_model) : "",
-    max_runtime: raw.max_runtime ? String(raw.max_runtime) : "",
+    requested_model: requestedModel,
+    max_runtime: maxRuntime,
     dry_run: dryRun,
     runner_mode: runnerMode,
     agent: normalizeAgent(raw.agent),
