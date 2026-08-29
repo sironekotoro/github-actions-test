@@ -41,7 +41,7 @@ function normalizeBoolean(value) {
 }
 
 function normalizeRunnerMode(value) {
-  if (value === undefined || value === null || String(value).trim() === "") return "github";
+  if (value === undefined || value === null || String(value).trim() === "") return "self-hosted";
   const mode = String(value).trim();
   if (mode === "github" || mode === "self-hosted") return mode;
   die("runner_mode must be github or self-hosted");
@@ -64,6 +64,11 @@ function normalize(raw, source) {
   }
   const prompt = String(raw.prompt).trim();
   if (!prompt) die("missing required field: prompt");
+  const dryRun = normalizeBoolean(raw.dry_run);
+  const runnerMode = normalizeRunnerMode(raw.runner_mode);
+  if (runnerMode === "github" && !dryRun) {
+    die("runner_mode=github is dry-run only; agent execution requires self-hosted isolation");
+  }
   return {
     task_id: String(raw.task_id).trim(),
     target_repository: String(raw.target_repository).trim(),
@@ -73,8 +78,8 @@ function normalize(raw, source) {
     created_at: new Date().toISOString(),
     requested_model: raw.requested_model ? String(raw.requested_model) : "",
     max_runtime: raw.max_runtime ? String(raw.max_runtime) : "",
-    dry_run: normalizeBoolean(raw.dry_run),
-    runner_mode: normalizeRunnerMode(raw.runner_mode),
+    dry_run: dryRun,
+    runner_mode: runnerMode,
     agent: normalizeAgent(raw.agent),
   };
 }
