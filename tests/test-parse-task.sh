@@ -70,14 +70,29 @@ tmp="$(make_temp)"
     DISPATCH_INPUTS='{"task_id":"d-default","target_repository":"sironekotoro/github-actions-test","title":"d","prompt":"x"}' \
     node "$PARSE" >"$tmp/stdout.log" 2>"$tmp/stderr.log" )
 code=$?
-t "T9e2 omitted runner mode defaults to github" "0|github" "$code|$(jq -r '.runner_mode' "$tmp/task.json")"
+t "T9e2 omitted runner mode defaults to self-hosted" "0|self-hosted" "$code|$(jq -r '.runner_mode' "$tmp/task.json")"
+
+tmp="$(make_temp)"
+( RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out.txt" \
+    DISPATCH_INPUTS='{"task_id":"d-hosted-live","target_repository":"sironekotoro/github-actions-test","title":"d","prompt":"x","runner_mode":"github","dry_run":false}' \
+    node "$PARSE" >"$tmp/stdout.log" 2>"$tmp/stderr.log" )
+code=$?
+err=""; [ -f "$tmp/stderr.log" ] && err="$(cut -d: -f1 < "$tmp/stderr.log")"
+t "T9e2a hosted non-dry-run execution fails closed" "1|INVALID_PAYLOAD" "$code|$err"
+
+tmp="$(make_temp)"
+( RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out.txt" \
+    DISPATCH_INPUTS='{"task_id":"d-hosted-dry","target_repository":"sironekotoro/github-actions-test","title":"d","prompt":"x","runner_mode":"github","dry_run":true}' \
+    node "$PARSE" >"$tmp/stdout.log" 2>"$tmp/stderr.log" )
+code=$?
+t "T9e2b hosted dry-run remains accepted" "0|github|true" "$code|$(jq -r '.runner_mode' "$tmp/task.json")|$(jq -r '.dry_run' "$tmp/task.json")"
 
 tmp="$(make_temp)"
 ( RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out.txt" \
     DISPATCH_INPUTS='{"task_id":"d-override","target_repository":"sironekotoro/github-actions-test","title":"d","prompt":"x","requested_model":"openrouter/example/model","max_runtime":"17"}' \
     node "$PARSE" >"$tmp/stdout.log" 2>"$tmp/stderr.log" )
 code=$?
-t "T9e2a task model and runtime are preserved" "0|openrouter/example/model|17|17" "$code|$(jq -r '.requested_model' "$tmp/task.json")|$(jq -r '.max_runtime' "$tmp/task.json")|$(awk -F= '$1 == "max_runtime" {print $2}' "$tmp/out.txt")"
+t "T9e2c task model and runtime are preserved" "0|openrouter/example/model|17|17" "$code|$(jq -r '.requested_model' "$tmp/task.json")|$(jq -r '.max_runtime' "$tmp/task.json")|$(awk -F= '$1 == "max_runtime" {print $2}' "$tmp/out.txt")"
 
 tmp="$(make_temp)"
 ( RUNNER_TEMP="$tmp" GITHUB_OUTPUT="$tmp/out.txt" \
