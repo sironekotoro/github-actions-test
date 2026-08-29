@@ -143,6 +143,13 @@ if [ "$container_status" -ne 0 ]; then
   exit "$container_status"
 fi
 
+# Only an already-redacted bounded diagnostic may cross the Docker boundary.
+# Keeping this unconditional preserves apply_agent_patch as the sole owner of
+# diff-status classification while raw /tmp/agent.log never reaches the host.
+agent_log="$agent_root/agent-redacted.log"
+docker cp "$agent_name:/tmp/agent-redacted.log" "$agent_log" >/dev/null 2>&1 || true
+docker rm -f "$agent_name" >/dev/null 2>&1 || true
+
 # An agent-created .git is never importable: it could otherwise smuggle Git
 # config or hooks into the trusted outer commit/push stage.
 [ ! -e "$workspace_dir/.git" ] \
@@ -158,16 +165,6 @@ set +e
 ) > "$patch_file"
 diff_status=$?
 set -e
-
-# A successful no-op is the only case that needs the agent tail. Copy only the
-# already-redacted bounded diagnostic; raw /tmp/agent.log never leaves Docker.
-agent_log=""
-if [ "$diff_status" -eq 0 ]; then
-  agent_log="$agent_root/agent-redacted.log"
-  docker cp "$agent_name:/tmp/agent-redacted.log" "$agent_log" >/dev/null 2>&1 || true
-fi
-docker rm -f "$agent_name" >/dev/null 2>&1 || true
-
 apply_agent_patch "$target_dir" "$patch_file" "$diff_status" "$agent_log" "${OPENROUTER_API_KEY:-}" "$prompt_file"
 
 summary "| agent isolation | Docker; non-root; read-only root; OpenRouter-only egress; no host credentials, .git, or Docker socket |"
