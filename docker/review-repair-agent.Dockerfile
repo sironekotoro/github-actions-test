@@ -1,6 +1,6 @@
 # Built solely from the trusted dispatcher checkout. Target repository code is
 # supplied only at runtime as an isolated .git-free working copy.
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
 
 ARG CODEX_CLI_VERSION=0.147.0
 ARG CLAUDE_CODE_VERSION=2.1.165
