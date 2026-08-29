@@ -28,21 +28,16 @@ on:
         options: [opencode, codex, claude-code]
         default: opencode
       runner_mode:
-        description: 'Execution runner: github (default) or self-hosted (explicit opt-in)'
+        description: 'Execution runner: self-hosted for agent work; github is dry-run only'
         required: false
         type: choice
-        options: [github, self-hosted]
-        default: github
+        options: [self-hosted, github]
+        default: self-hosted
       dry_run:
         description: 'Validate auth/checkout/identity/default branch/prompt without running the agent or mutating the target'
         required: false
         type: boolean
         default: false
-
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
 
 concurrency:
   group: agent-dispatch-${{ inputs.target_repository || github.repository }}-${{ github.event.issue.number || inputs.task_id }}
@@ -50,18 +45,20 @@ concurrency:
 
 jobs:
   route:
-    # Parse only. An invalid runner_mode fails before an agent job is selected.
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     if: ${{ github.event_name == 'workflow_dispatch' || contains(fromJSON('["opencode-run","agent:ready"]'), github.event.label.name) }}
     outputs:
       runner_mode: ${{ steps.parse.outputs.runner_mode }}
       agent: ${{ steps.parse.outputs.agent }}
+      dry_run: ${{ steps.parse.outputs.dry_run }}
     steps:
       - name: Checkout dispatcher repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ github.token }}
+          persist-credentials: false
 
       - name: Parse task and select runner mode
         id: parse
@@ -70,20 +67,22 @@ jobs:
           DISPATCH_INPUTS: ${{ github.event_name == 'workflow_dispatch' && toJson(inputs) || '' }}
         run: node scripts/parse-task.mjs
 
-      - name: Validate explicit self-hosted runner configuration
+      - name: Validate self-hosted runner configuration
         if: steps.parse.outputs.runner_mode == 'self-hosted'
         env:
-          # Reuse the only configured Mac runner label set. This workflow never
-          # changes REVIEW_REPAIR_ENABLED or the review-repair workflow itself.
           AGENT_DISPATCH_RUNNER_LABELS: ${{ vars.REVIEW_REPAIR_RUNNER_LABELS }}
         run: bash scripts/check-agent-dispatch-runner.sh
 
   agent_github:
-    name: Agent Dispatch (GitHub-hosted)
+    name: Agent Dispatch (GitHub-hosted dry-run only)
     needs: route
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    if: needs.route.result == 'success' && needs.route.outputs.runner_mode == 'github'
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    if: needs.route.result == 'success' && needs.route.outputs.runner_mode == 'github' && needs.route.outputs.dry_run == 'true'
     env:
       ACTOR_ALLOWLIST: 'sironekotoro'
       CROSS_REPO_ENABLED: ${{ vars.CROSS_REPO_ENABLED || 'false' }}
@@ -93,7 +92,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ github.token }}
+          persist-credentials: false
 
       - name: Authorize actor
         id: authorize
@@ -125,8 +124,6 @@ jobs:
           CROSS_REPO_ENABLED: ${{ env.CROSS_REPO_ENABLED }}
         run: bash scripts/authorize-target.sh
 
-      # Existing same-repository safety path remains unchanged in principle:
-      # payload target == workflow repo == checkout remote.
       - name: Same-repo identity guard
         id: same_guard
         if: steps.target.outputs.mode == 'same'
@@ -135,7 +132,6 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: bash scripts/guard-repo.sh
 
-      # Cross-repo auth is GitHub App only. The preflight never prints values.
       - name: Check cross-repo GitHub App configuration
         id: cross_auth
         if: steps.target.outputs.mode == 'cross'
@@ -144,7 +140,7 @@ jobs:
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
         run: bash scripts/check-cross-repo-auth.sh
 
-      - name: Create target-scoped GitHub App token
+      - name: Create read-only target-scoped GitHub App token
         id: app_token
         if: steps.target.outputs.mode == 'cross' && steps.cross_auth.outputs.result == 'pass'
         continue-on-error: true
@@ -154,8 +150,8 @@ jobs:
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.target_owner }}
           repositories: ${{ steps.target.outputs.target_name }}
-          permission-contents: write
-          permission-pull-requests: write
+          permission-contents: read
+          permission-pull-requests: read
 
       - name: Classify GitHub App token failure
         if: steps.target.outputs.mode == 'cross' && steps.cross_auth.outputs.result == 'pass' && steps.app_token.outcome != 'success'
@@ -163,7 +159,7 @@ jobs:
           source scripts/lib/common.sh
           fail_with "$CAT_APP_TOKEN_FAILED" "could not create a target-scoped installation token"
 
-      - name: Checkout cross-repo target
+      - name: Checkout cross-repo target read-only
         id: target_checkout
         if: steps.target.outputs.mode == 'cross' && steps.app_token.outcome == 'success'
         continue-on-error: true
@@ -173,7 +169,7 @@ jobs:
           token: ${{ steps.app_token.outputs.token }}
           fetch-depth: 0
           path: target
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Classify target checkout failure
         if: steps.target.outputs.mode == 'cross' && steps.app_token.outcome == 'success' && steps.target_checkout.outcome != 'success'
@@ -191,7 +187,7 @@ jobs:
 
       - name: Same-repo dry-run inspection
         id: dry_same
-        if: steps.target.outputs.mode == 'same' && steps.same_guard.outputs.result == 'pass' && steps.parse.outputs.dry_run == 'true'
+        if: steps.target.outputs.mode == 'same' && steps.same_guard.outputs.result == 'pass'
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
           GH_TOKEN: ${{ github.token }}
@@ -199,111 +195,12 @@ jobs:
 
       - name: Cross-repo dry-run inspection
         id: dry_cross
-        if: steps.target.outputs.mode == 'cross' && steps.cross_guard.outputs.result == 'pass' && steps.parse.outputs.dry_run == 'true'
+        if: steps.target.outputs.mode == 'cross' && steps.cross_guard.outputs.result == 'pass'
         working-directory: target
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: bash ../scripts/inspect-target.sh
-
-      - name: Prepare same-repo agent branch
-        id: prep_same
-        if: steps.target.outputs.mode == 'same' && steps.same_guard.outputs.result == 'pass' && steps.parse.outputs.dry_run != 'true'
-        env:
-          TASK_FILE: ${{ runner.temp }}/task.json
-          GH_TOKEN: ${{ github.token }}
-          DISPATCH_MODE: same
-        run: bash scripts/prepare-branch.sh
-
-      - name: Prepare cross-repo agent branch
-        id: prep_cross
-        if: steps.target.outputs.mode == 'cross' && steps.cross_guard.outputs.result == 'pass' && steps.parse.outputs.dry_run != 'true'
-        working-directory: target
-        env:
-          TASK_FILE: ${{ runner.temp }}/task.json
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
-          DISPATCH_MODE: cross
-        run: bash ../scripts/prepare-branch.sh
-
-      - name: Run same-repo coding agent
-        id: agent_same
-        if: steps.prep_same.outputs.result == 'pass'
-        env:
-          TASK_FILE: ${{ runner.temp }}/task.json
-          # Resolve one provider credential from the normalized agent choice.
-          # run-agent.sh maps this value to the selected CLI's exact variable
-          # only inside its clean child environment.
-          AGENT_CREDENTIAL_VALUE: ${{ steps.parse.outputs.agent == 'opencode' && secrets.OPENROUTER_API_KEY || steps.parse.outputs.agent == 'codex' && secrets.OPENAI_API_KEY || steps.parse.outputs.agent == 'claude-code' && secrets.ANTHROPIC_API_KEY || '' }}
-          AGENT_HOME: ${{ runner.temp }}/agent-home
-          OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
-        run: bash scripts/run-agent.sh
-
-      - name: Run cross-repo coding agent
-        id: agent_cross
-        if: steps.prep_cross.outputs.result == 'pass'
-        working-directory: target
-        env:
-          TASK_FILE: ${{ runner.temp }}/task.json
-          AGENT_CREDENTIAL_VALUE: ${{ steps.parse.outputs.agent == 'opencode' && secrets.OPENROUTER_API_KEY || steps.parse.outputs.agent == 'codex' && secrets.OPENAI_API_KEY || steps.parse.outputs.agent == 'claude-code' && secrets.ANTHROPIC_API_KEY || '' }}
-          AGENT_HOME: ${{ runner.temp }}/agent-home
-          OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
-        run: bash ../scripts/run-agent.sh
-
-      # GitHub-hosted execution has no isolated trusted outer wrapper. Keep
-      # ordinary behavior unchanged, but do not materialize a workflow-write
-      # credential in that agent environment.
-      - name: Classify same-repo workflow publication
-        id: workflow_same
-        if: steps.agent_same.outputs.result == 'pass'
-        env:
-          TASK_FILE: ${{ runner.temp }}/task.json
-          DEFAULT_BRANCH: ${{ steps.prep_same.outputs.default_branch }}
-          DISPATCH_MODE: same
-          DISPATCHER_REPOSITORY: ${{ github.repository }}
-        run: bash scripts/classify-workflow-push.sh
-
-      - name: Classify cross-repo workflow publication
-        id: workflow_cross
-        if: steps.agent_cross.outputs.result == 'pass'
-        working-directory: target
-        env:
-          TASK_FILE: ${{ runner.temp }}/task.json
-          DEFAULT_BRANCH: ${{ steps.prep_cross.outputs.default_branch }}
-          DISPATCH_MODE: cross
-          DISPATCHER_REPOSITORY: ${{ github.repository }}
-        run: bash ../scripts/classify-workflow-push.sh
-
-      - name: Fail closed for hosted workflow publication
-        if: steps.workflow_same.outputs.workflow_change == 'true'
-        run: |
-          source scripts/lib/common.sh
-          fail_with "$CAT_WORKFLOW_PUSH_AUTH_NOT_CONFIGURED" "agent execution succeeded, but workflow-file publication is available only through the isolated self-hosted trusted wrapper"
-
-      - name: Commit, push, and create same-repo ordinary PR
-        id: commit_same
-        if: steps.agent_same.outputs.result == 'pass' && steps.workflow_same.outputs.workflow_change != 'true'
-        env:
-          TASK_FILE: ${{ runner.temp }}/task.json
-          GH_TOKEN: ${{ github.token }}
-          DEFAULT_BRANCH: ${{ steps.prep_same.outputs.default_branch }}
-          OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
-          DISPATCH_MODE: same
-          DISPATCHER_REPOSITORY: ${{ github.repository }}
-        run: bash scripts/commit-push-pr.sh
-
-      - name: Commit, push, and create cross-repo PR
-        id: commit_cross
-        if: steps.agent_cross.outputs.result == 'pass' && steps.workflow_cross.outputs.workflow_change != 'true'
-        working-directory: target
-        env:
-          TASK_FILE: ${{ runner.temp }}/task.json
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
-          DEFAULT_BRANCH: ${{ steps.prep_cross.outputs.default_branch }}
-          OPENROUTER_MODEL: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
-          DISPATCH_MODE: cross
-          DISPATCHER_REPOSITORY: ${{ github.repository }}
-          DISPATCH_PRINCIPAL: ${{ steps.app_token.outputs.app-slug }}[bot]
-        run: bash ../scripts/commit-push-pr.sh
 
       - name: Feedback and step summary
         if: always()
@@ -311,19 +208,18 @@ jobs:
           TASK_FILE: ${{ runner.temp }}/task.json
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-          AGENT_BRANCH: ${{ steps.prep_cross.outputs.branch || steps.prep_same.outputs.branch }}
-          PR_URL: ${{ steps.commit_cross.outputs.pr_url || steps.commit_same.outputs.pr_url }}
-          PR_NUMBER: ${{ steps.commit_cross.outputs.pr_number || steps.commit_same.outputs.pr_number }}
         run: bash scripts/post-feedback.sh
 
   agent_self_hosted:
-    name: Agent Dispatch (self-hosted experiment)
+    name: Agent Dispatch (self-hosted isolated)
     needs: route
     if: needs.route.result == 'success' && needs.route.outputs.runner_mode == 'self-hosted'
-    # Existing repository variable; it currently resolves only to the online
-    # Mac runner labelled self-hosted + review-repair + macOS + ARM64.
     runs-on: ${{ fromJSON(vars.REVIEW_REPAIR_RUNNER_LABELS) }}
     timeout-minutes: 45
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     env:
       ACTOR_ALLOWLIST: 'sironekotoro'
     steps:
@@ -341,9 +237,6 @@ jobs:
           cross_repo_enabled: ${{ vars.CROSS_REPO_ENABLED || 'false' }}
           app_id: ${{ secrets.GH_APP_ID }}
           app_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          # The action receives one selected credential. The legacy per-agent
-          # inputs remain available for compatibility but are not populated by
-          # this workflow.
           agent_credential: ${{ needs.route.outputs.agent == 'opencode' && secrets.OPENROUTER_API_KEY || needs.route.outputs.agent == 'codex' && secrets.OPENAI_API_KEY || needs.route.outputs.agent == 'claude-code' && secrets.ANTHROPIC_API_KEY || '' }}
           openrouter_model: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
           agent: ${{ needs.route.outputs.agent || 'opencode' }}
