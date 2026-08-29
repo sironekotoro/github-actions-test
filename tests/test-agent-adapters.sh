@@ -84,6 +84,12 @@ run_success_case opencode opencode OPENROUTER_API_KEY selected-openrouter OPENRO
 run_success_case codex codex OPENAI_API_KEY selected-openai CODEX_API_KEY codex
 run_success_case claude-code claude ANTHROPIC_API_KEY selected-anthropic ANTHROPIC_API_KEY claude-code
 
+# The production image deliberately pins the exact OpenCode release whose run
+# contract supports --auto and --agent. Do not silently drift to an invented
+# per-permission CLI flag: v1.18.16 handles permission prompts through --auto.
+t "OpenCode production CLI stays pinned at 1.18.16" "yes" "$(grep -Fq 'opencode-ai@1.18.16' "$ROOT/docker/review-repair-agent.Dockerfile" && echo yes || echo no)"
+t "OpenCode adapter does not use unsupported --permission flag" "absent" "$(grep -Eq -- '(^|[[:space:]])--permission([[:space:]]|$)' "$ROOT/scripts/agents/opencode.sh" && echo present || echo absent)"
+
 # A non-auth Codex provider failure must still be classified by the shared
 # run-agent loop, not mistaken for an unavailable CLI or an auth failure.
 tmp="$(make_temp)"
