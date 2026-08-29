@@ -36,8 +36,14 @@ agent_run() {
   # alone leaves the Responses request without an Authorization header.
   [ "$credential_var" = "OPENAI_API_KEY" ] \
     || fail_with "$CAT_AGENT_AUTH" "Codex openai-api profile resolved an unexpected credential variable"
+
+  # Codex defaults to a read-only filesystem sandbox. The outer Agent Dispatch
+  # container already provides the stronger capability boundary: read-only
+  # rootfs, no host .git/HOME/credentials/socket, and only /workspace mounted
+  # writable. Select workspace-write inside Codex so it can edit that disposable
+  # source tree without broadening the outer container boundary.
   agent_run_clean "CODEX_API_KEY" "$credential_value" "$max_runtime" "$logfile" -- \
-    codex exec --skip-git-repo-check "$prompt"
+    codex exec --sandbox workspace-write --skip-git-repo-check "$prompt"
 }
 
 is_auth_agent_error() {
