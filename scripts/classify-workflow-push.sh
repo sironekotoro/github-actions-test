@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Validate the post-agent repository state and classify workflow publication.
-# This trusted outer-wrapper step is the only source of workflow token routing.
+# Validate the post-agent repository state and enforce publication policy.
+# Agent-generated GitHub workflow files are never published automatically.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,19 +36,19 @@ if [ "$mode" = same ] && [ "$target" != "$dispatcher" ]; then
 fi
 
 workflow_push_validate_paths
-workflow_change=false
 if workflow_push_diff_contains_workflows; then
-  workflow_change=true
-fi
-
-if [ "$workflow_change" = true ] && [ "$mode" = cross ]; then
-  fail_with "$CAT_CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED" \
-    "cross-repository workflow-file publication is intentionally unsupported"
+  if [ "$mode" = cross ]; then
+    fail_with "$CAT_CROSS_REPO_WORKFLOW_PUSH_UNSUPPORTED" \
+      "agent-generated .github/workflows changes are intentionally unsupported"
+  fi
+  fail_with "$CAT_WORKFLOW_PUSH_AUTH_NOT_CONFIGURED" \
+    "agent-generated .github/workflows changes require manual trusted review and publication"
 fi
 
 {
-  echo "workflow_change=$workflow_change"
+  echo "workflow_change=false"
   echo "result=pass"
 } >> "${GITHUB_OUTPUT:-/dev/null}"
-summary "| workflow-file diff | $workflow_change |"
-log_info "workflow publication classification: $workflow_change"
+summary "| workflow-file diff | false |"
+summary "| workflow publication | automatic agent publication disabled |"
+log_info "publication policy validation: no workflow-file diff"
