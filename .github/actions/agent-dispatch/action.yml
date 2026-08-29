@@ -91,7 +91,7 @@ runs:
     - name: Checkout same-repo target separately
       id: same_target_checkout
       if: steps.target.outputs.mode == 'same' && steps.same_guard.outputs.result == 'pass'
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         repository: ${{ steps.target.outputs.target_repository }}
         token: ${{ inputs.github_token }}
@@ -121,7 +121,7 @@ runs:
       id: app_token
       if: steps.target.outputs.mode == 'cross' && steps.cross_auth.outputs.result == 'pass'
       continue-on-error: true
-      uses: actions/create-github-app-token@v3
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
       with:
         app-id: ${{ inputs.app_id }}
         private-key: ${{ inputs.app_private_key }}
@@ -141,7 +141,7 @@ runs:
       id: target_checkout
       if: steps.target.outputs.mode == 'cross' && steps.app_token.outcome == 'success'
       continue-on-error: true
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         repository: ${{ steps.target.outputs.target_repository }}
         token: ${{ steps.app_token.outputs.token }}
