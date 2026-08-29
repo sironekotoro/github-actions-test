@@ -127,3 +127,17 @@ agent_run_clean() {
     agent_exec_clean "$credential_var" "$credential_value" -- "$@" >"$logfile" 2>&1
   fi
 }
+
+# apply_agent_patch <target-dir> <patch-file>
+#
+# Validates and imports a patch into the target repository. Both the --check
+# validation and the final apply suppress stderr because git apply diagnostic
+# output is not actionable by the caller: the failure category alone signals
+# the nature of the problem. Shared between ordinary dispatch and review-repair.
+apply_agent_patch() {
+  local target_dir="$1" patch_file="$2"
+  git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" 2>/dev/null \
+    || fail_with "$CAT_AGENT_PATCH_INVALID" "isolated agent patch failed validation"
+  git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" 2>/dev/null \
+    || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import isolated agent patch"
+}
