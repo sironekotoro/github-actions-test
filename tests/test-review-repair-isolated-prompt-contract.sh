@@ -30,6 +30,6 @@ RUNNER_TEMP="$tmp" TASK_FILE="$tmp/task.json" PROMPT_FILE="$tmp/prompt" \
 t "review isolated prompt builds" "0" "$?"
 t "review isolated prompt omits legacy git status short" "no" "$(grep -Fq '  git status --short' "$tmp/prompt" && echo yes || echo no)"
 t "review isolated prompt omits legacy standalone git diff check" "no" "$(grep -Fxq '  git diff --check' "$tmp/prompt" && echo yes || echo no)"
-t "review isolated prompt keeps baseline validation" "yes" "$(grep -Fq 'git diff --no-index --check /baseline /workspace || [ \"$?\" -eq 1 ]' "$tmp/prompt" && echo yes || echo no)"
+t "review isolated prompt keeps baseline validation" "yes" "$(grep -Fq 'git diff --no-index --check /baseline /workspace || [ "$?" -eq 1 ]' "$tmp/prompt" && echo yes || echo no)"
 
 finish
