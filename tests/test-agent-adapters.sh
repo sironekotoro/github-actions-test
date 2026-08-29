@@ -64,10 +64,10 @@ MOCK
       ;;
     codex)
       t "Codex uses exec" exec "$(sed -n '1p' "$tmp/argv")"
-      t "Codex sets sandbox flag" --sandbox "$(sed -n '2p' "$tmp/argv")"
-      t "Codex uses workspace-write sandbox" workspace-write "$(sed -n '3p' "$tmp/argv")"
-      t "Codex uses --skip-git-repo-check" --skip-git-repo-check "$(sed -n '4p' "$tmp/argv")"
-      t "Codex receives one prompt argument" 'prompt with spaces; $HOME must stay literal' "$(sed -n '5p' "$tmp/argv")"
+      t "Codex relies on external sandbox" --dangerously-bypass-approvals-and-sandbox "$(sed -n '2p' "$tmp/argv")"
+      t "Codex uses --skip-git-repo-check" --skip-git-repo-check "$(sed -n '3p' "$tmp/argv")"
+      t "Codex receives one prompt argument" 'prompt with spaces; $HOME must stay literal' "$(sed -n '4p' "$tmp/argv")"
+      t "Codex does not request nested workspace sandbox" "absent" "$(grep -qx -- '--sandbox' "$tmp/argv" && echo present || echo absent)"
       t "Codex adapter does not use legacy run" no "$(grep -qx run "$tmp/argv" && echo yes || echo no)"
       ;;
     claude-code)
