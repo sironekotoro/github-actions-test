@@ -28,6 +28,7 @@ CAT_DIRTY_TREE="DIRTY_WORKING_TREE"
 CAT_CHECKOUT="CHECKOUT_FAILED"
 CAT_AGENT_START="AGENT_START_FAILED"
 CAT_AGENT_PATCH_INVALID="AGENT_PATCH_INVALID"
+CAT_AGENT_CREDENTIAL_LEAK_BLOCKED="AGENT_CREDENTIAL_LEAK_BLOCKED"
 CAT_MODEL_API="MODEL_API_FAILED"
 CAT_AGENT_TIMEOUT="AGENT_TIMEOUT"
 CAT_TEST="TEST_FAILED"
@@ -88,6 +89,125 @@ sha256_of() {
   command -v shasum >/dev/null 2>&1 \
     && shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1 \
     || openssl dgst -sha256 "$1" 2>/dev/null | awk '{print $NF}'
+}
+
+# scan_final_workspace_for_credential <workspace-dir> <credential-value>
+#
+# Inspect the final isolated tree before any patch is constructed. Node handles
+# path names and file contents as byte sequences; the credential is supplied
+# only through the environment, never argv or a temporary file. lstat keeps
+# symlinks opaque: their link text is scanned, but their targets are not read.
+scan_final_workspace_for_credential() {
+  local workspace_dir="$1" credential_value="$2" scan_status
+
+  [ -z "$credential_value" ] && return 0
+  command -v node >/dev/null 2>&1 \
+    || fail_with "$CAT_AGENT_CREDENTIAL_LEAK_BLOCKED" "credential publication scan unavailable"
+
+  if AGENT_PUBLICATION_SCAN_CREDENTIAL="$credential_value" node - "$workspace_dir" <<'NODE'
+const fs = require('fs');
+
+const root = process.argv[2];
+const needle = Buffer.from(process.env.AGENT_PUBLICATION_SCAN_CREDENTIAL || '');
+if (needle.length === 0) process.exit(0);
+
+function containsNeedle(buffer) {
+  return buffer.indexOf(needle) !== -1;
+}
+
+function scanFile(entry) {
+  const noFollow = fs.constants.O_NOFOLLOW || 0;
+  const descriptor = fs.openSync(entry, fs.constants.O_RDONLY | noFollow);
+  try {
+    if (!fs.fstatSync(descriptor).isFile()) throw new Error('entry changed during scan');
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let overlap = Buffer.alloc(0);
+    for (;;) {
+      const count = fs.readSync(descriptor, chunk, 0, chunk.length, null);
+      if (count === 0) return false;
+      const candidate = Buffer.concat([overlap, chunk.subarray(0, count)]);
+      if (containsNeedle(candidate)) return true;
+      const keep = Math.min(needle.length - 1, candidate.length);
+      overlap = candidate.subarray(candidate.length - keep);
+    }
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function scan(entry) {
+  const stat = fs.lstatSync(entry);
+  if (stat.isSymbolicLink()) {
+    return containsNeedle(Buffer.from(fs.readlinkSync(entry, {encoding: 'buffer'})));
+  }
+  if (stat.isFile()) return scanFile(entry);
+  if (!stat.isDirectory()) return false;
+  for (const name of fs.readdirSync(entry, {encoding: 'buffer'})) {
+    if (containsNeedle(name)) return true;
+    if (scan(Buffer.concat([Buffer.from(entry), Buffer.from('/'), name]))) return true;
+  }
+  return false;
+}
+
+try {
+  process.exit(scan(Buffer.from(root)) ? 42 : 0);
+} catch (_) {
+  process.exit(1);
+}
+NODE
+  then
+    return 0
+  else
+    scan_status=$?
+  fi
+  if [ "$scan_status" -eq 42 ]; then
+    fail_with "$CAT_AGENT_CREDENTIAL_LEAK_BLOCKED" "selected credential found in isolated workspace"
+  fi
+  fail_with "$CAT_AGENT_CREDENTIAL_LEAK_BLOCKED" "credential publication scan failed"
+}
+
+# redacted_agent_log_tail <log-file> <credential-value>
+# Print the usual 40-line diagnostic tail after exact-literal replacement.
+# The credential reaches trusted Node through the environment only.
+redacted_agent_log_tail() {
+  local logfile="$1" credential_value="$2"
+  AGENT_LOG_REDACTION_CREDENTIAL="$credential_value" node - "$logfile" <<'NODE' >&2
+const fs = require('fs');
+const file = process.argv[2];
+const marker = Buffer.from('[REDACTED_SELECTED_CREDENTIAL]');
+const needle = Buffer.from(process.env.AGENT_LOG_REDACTION_CREDENTIAL || '');
+
+function tailLines(data, count) {
+  const newlines = [];
+  for (let i = 0; i < data.length; i++) if (data[i] === 10) newlines.push(i);
+  const completeLines = newlines.length;
+  const hasPartialLine = data.length > 0 && data[data.length - 1] !== 10;
+  const totalLines = completeLines + (hasPartialLine ? 1 : 0);
+  if (totalLines <= count) return data;
+  return data.subarray(newlines[totalLines - count - 1] + 1);
+}
+
+function replaceExact(data, search, replacement) {
+  if (search.length === 0) return data;
+  const parts = [];
+  let offset = 0;
+  for (;;) {
+    const found = data.indexOf(search, offset);
+    if (found === -1) break;
+    parts.push(data.subarray(offset, found), replacement);
+    offset = found + search.length;
+  }
+  parts.push(data.subarray(offset));
+  return Buffer.concat(parts);
+}
+
+try {
+  const data = tailLines(fs.readFileSync(file), 40);
+  process.stderr.write(replaceExact(data, needle, marker));
+} catch (_) {
+  process.stderr.write('[agent log unavailable]\n');
+}
+NODE
 }
 
 # agent_exec_clean <credential-var> <credential-value> -- <command...>

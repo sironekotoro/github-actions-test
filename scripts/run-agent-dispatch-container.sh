@@ -175,6 +175,8 @@ if [ -e "$workspace_dir/.git" ]; then
     || fail_with "$CAT_AGENT_START" "could not discard isolated agent .git entry"
 fi
 
+scan_final_workspace_for_credential "$workspace_dir" "$agent_credential"
+
 patch_file="$agent_root/agent.patch"
 set +e
 (

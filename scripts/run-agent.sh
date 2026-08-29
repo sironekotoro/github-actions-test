@@ -106,7 +106,7 @@ while :; do
   if [ "$status" -eq 124 ]; then
     set_failure "$CAT_AGENT_TIMEOUT"
     log_error "FAILURE_CATEGORY=$CAT_AGENT_TIMEOUT exceeded ${max_runtime}m"
-    tail -n 40 "$AGENT_LOG" >&2
+    redacted_agent_log_tail "$AGENT_LOG" "$credential_value"
     break
   fi
   # Authentication failures are deterministic for the supplied credential.
@@ -115,13 +115,13 @@ while :; do
   if declare -F is_auth_agent_error >/dev/null 2>&1 && is_auth_agent_error "$AGENT_LOG"; then
     set_failure "$CAT_AGENT_AUTH"
     log_error "FAILURE_CATEGORY=$CAT_AGENT_AUTH agent=$agent authentication failed"
-    tail -n 40 "$AGENT_LOG" >&2
+    redacted_agent_log_tail "$AGENT_LOG" "$credential_value"
     break
   fi
   if [ "$attempt" -ge "$max_attempts" ] || ! is_transient_agent_error "$AGENT_LOG"; then
     set_failure "$CAT_MODEL_API"
     log_error "FAILURE_CATEGORY=$CAT_MODEL_API agent=$agent exited $status (attempt $attempt)"
-    tail -n 40 "$AGENT_LOG" >&2
+    redacted_agent_log_tail "$AGENT_LOG" "$credential_value"
     break
   fi
   log_warn "transient API failure; retrying (attempt $attempt)"

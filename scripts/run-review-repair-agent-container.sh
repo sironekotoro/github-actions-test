@@ -136,6 +136,8 @@ echo "runtime_seconds=$agent_runtime_seconds" >> "${GITHUB_OUTPUT:-/dev/null}"
 [ ! -e "$workspace_dir/.git" ] \
   || fail_with "$CAT_AGENT_START" "isolated agent created forbidden .git entry"
 
+scan_final_workspace_for_credential "$workspace_dir" "${OPENROUTER_API_KEY:-}"
+
 patch_file="$agent_root/repair.patch"
 set +e
 (
