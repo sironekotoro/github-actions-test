@@ -166,16 +166,23 @@ NODE
   fail_with "$CAT_AGENT_CREDENTIAL_LEAK_BLOCKED" "credential publication scan failed"
 }
 
-# redacted_agent_log_tail <log-file> <credential-value>
+# redacted_agent_log_tail <log-file> <credential-value> [prompt-file]
 # Print the usual 40-line diagnostic tail after exact-literal replacement.
 # The credential reaches trusted Node through the environment only.
 redacted_agent_log_tail() {
-  local logfile="$1" credential_value="$2"
-  AGENT_LOG_REDACTION_CREDENTIAL="$credential_value" node - "$logfile" <<'NODE' >&2
+  local logfile="$1" credential_value="$2" prompt_file="${3:-}"
+  AGENT_LOG_REDACTION_CREDENTIAL="$credential_value" node - "$logfile" "$prompt_file" <<'NODE' >&2
 const fs = require('fs');
 const file = process.argv[2];
 const marker = Buffer.from('[REDACTED_SELECTED_CREDENTIAL]');
+const promptMarker = Buffer.from('[REDACTED_AGENT_PROMPT]');
 const needle = Buffer.from(process.env.AGENT_LOG_REDACTION_CREDENTIAL || '');
+let prompt = Buffer.alloc(0);
+try {
+  if (process.argv[3]) prompt = fs.readFileSync(process.argv[3]);
+} catch (_) {
+  prompt = Buffer.alloc(0);
+}
 
 function tailLines(data, count) {
   const newlines = [];
@@ -203,7 +210,8 @@ function replaceExact(data, search, replacement) {
 
 try {
   const data = tailLines(fs.readFileSync(file), 40);
-  process.stderr.write(replaceExact(data, needle, marker));
+  const credentialRedacted = replaceExact(data, needle, marker);
+  process.stderr.write(replaceExact(credentialRedacted, prompt, promptMarker));
 } catch (_) {
   process.stderr.write('[agent log unavailable]\n');
 }
@@ -254,12 +262,13 @@ agent_run_clean() {
   fi
 }
 
-# apply_agent_patch <target-dir> <patch-file> <diff-status>
+# apply_agent_patch <target-dir> <patch-file> <diff-status> [agent-log] [credential-value] [prompt-file]
 #
 # Shared trusted helper that validates and imports an untrusted agent patch.
 # Called identically from ordinary dispatch and review-repair paths.
 apply_agent_patch() {
   local target_dir="$1" patch_file="$2" diff_status="$3"
+  local agent_log="${4:-}" credential_value="${5:-}" prompt_file="${6:-}"
 
   # diff_status outside {0,1} => infrastructure failure, not patch error
   [ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ] \
@@ -268,6 +277,10 @@ apply_agent_patch() {
   # diff_status=0 => no changes from the agent
   if [ "$diff_status" -eq 0 ]; then
     set_failure_reason "NO_CHANGES"
+    if [ -n "$agent_log" ]; then
+      log_error "agent exited successfully but produced no filesystem changes; redacted log tail follows"
+      redacted_agent_log_tail "$agent_log" "$credential_value" "$prompt_file"
+    fi
     fail_with "$CAT_AGENT_PATCH_INVALID" "agent patch produced no changes"
   fi
 

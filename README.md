@@ -101,7 +101,7 @@ GitHub Appの最小権限・セットアップ手順は [docs/CROSS_REPO_DISPATC
 
 | agent | profile | CLI | repository secret | runtime credential |
 |---|---|---|---|---|
-| `opencode` | `openrouter` | `opencode run --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY` |
+| `opencode` | `openrouter` | `opencode run --auto --agent build --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY` |
 | `codex` | `openai-api` | `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "$prompt"` | `OPENAI_API_KEY` | `CODEX_API_KEY` |
 | `claude-code` | `anthropic-api` | `claude -p "$prompt"` | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY` |
 

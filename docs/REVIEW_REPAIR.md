@@ -139,6 +139,8 @@ GitHub/App tokens, the Docker socket, or any other repository. The agent
 container is non-root, has a read-only root, temporary HOME/tmp, all Linux
 capabilities dropped, and no direct external route. A separate proxy is the
 sole egress path and permits HTTPS CONNECT only to the provider API allowlist;
+inside this boundary, pinned OpenCode 1.18.16 runs with `--auto --agent build`
+so non-interactive edit/bash permission prompts cannot turn a repair into a silent no-op.
 review repair has no OpenAI or Anthropic credential and cannot select those
 adapters. The outer executor imports only a checked patch and does not run
 target tests or hooks. The API key is unset before repository tests run, and
@@ -147,6 +149,9 @@ Before repair patch construction, the trusted wrapper scans the final workspace
 filenames, regular files, and symlink target strings for the exact `OPENROUTER_API_KEY` bytes,
 without following symlinks. A match or scanner error fails closed as
 `AGENT_CREDENTIAL_LEAK_BLOCKED`, and failure-log tails redact that exact literal.
+If OpenCode exits successfully but the trusted outer diff reports `NO_CHANGES`,
+the executor emits only the bounded, exact-literal-redacted tail of the agent log.
+The selected credential and complete generated prompt are replaced with fixed markers.
 This blocks raw key persistence/publication, but is not complete containment because
 the agent process still receives the key; a local auth broker/relay is the long-term fix.
 Target checkout does not persist credentials,

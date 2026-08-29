@@ -83,7 +83,7 @@ only under self-hosted isolation.
 
 | agent | profile | exact invocation | repository secret | runtime credential |
 |---|---|---|---|---|
-| `opencode` | `openrouter` | `opencode run --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY` |
+| `opencode` | `openrouter` | `opencode run --auto --agent build --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY` |
 | `codex` | `openai-api` | `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "$prompt"` | `OPENAI_API_KEY` | `CODEX_API_KEY` |
 | `claude-code` | `anthropic-api` | `claude -p "$prompt"` | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY` |
 
@@ -103,6 +103,9 @@ The trusted image pins:
 - `opencode-ai@1.18.16`
 - `@openai/codex@0.147.0`
 - `@anthropic-ai/claude-code@2.1.165`
+
+The pinned OpenCode CLI supports `--auto` and `--agent`; automation invokes
+`opencode run --auto --agent build` only inside the hardened disposable container.
 
 The egress proxy permits HTTPS CONNECT only to the provider API domains required by this
 matrix.

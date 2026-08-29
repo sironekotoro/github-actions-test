@@ -33,8 +33,10 @@ runner_gid="$(id -g)"
 private_network="review-repair-private-$run_key"
 egress_network="review-repair-egress-net-$run_key"
 proxy_name="review-repair-proxy-$run_key"
+agent_name="review-repair-agent-run-$run_key"
 cleanup_networks() {
   local status="$?"
+  docker rm -f "$agent_name" >/dev/null 2>&1 || true
   docker rm -f "$proxy_name" >/dev/null 2>&1 || true
   docker network rm "$private_network" >/dev/null 2>&1 || true
   docker network rm "$egress_network" >/dev/null 2>&1 || true
@@ -84,7 +86,7 @@ agent_started_epoch="$(date +%s)"
 set +e
 # Pass the single review credential by name so its value is not present in
 # the host-visible docker command line.
-docker run --rm --init \
+docker run --name "$agent_name" --init \
   --network "$private_network" \
   --dns 127.0.0.1 \
   --read-only \
@@ -128,6 +130,12 @@ set -e
 agent_finished_epoch="$(date +%s)"
 agent_runtime_seconds=$((agent_finished_epoch - agent_started_epoch))
 
+agent_log="$agent_root/agent.log"
+if [ "$container_status" -eq 0 ]; then
+  docker cp "$agent_name:/tmp/agent.log" "$agent_log" >/dev/null 2>&1 || true
+fi
+docker rm -f "$agent_name" >/dev/null 2>&1 || true
+
 echo "runtime_seconds=$agent_runtime_seconds" >> "${GITHUB_OUTPUT:-/dev/null}"
 [ "$container_status" -eq 0 ] || exit "$container_status"
 
@@ -146,7 +154,7 @@ set +e
 ) > "$patch_file"
 diff_status=$?
 set -e
-apply_agent_patch "$target_dir" "$patch_file" "$diff_status"
+apply_agent_patch "$target_dir" "$patch_file" "$diff_status" "$agent_log" "${OPENROUTER_API_KEY:-}" "$prompt_file"
 
 summary "| agent isolation | Docker; non-root; read-only root; OpenRouter-only egress; no host credentials, .git, or Docker socket |"
 summary "| tests | pass (isolated agent container) |"

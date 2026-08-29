@@ -59,7 +59,10 @@ MOCK
   case "$expected_cli" in
     opencode)
       t "OpenCode uses run" run "$(sed -n '1p' "$tmp/argv")"
-      t "OpenCode uses print logs" --print-logs "$(sed -n '2p' "$tmp/argv")"
+      t "OpenCode auto-approves inside outer sandbox" --auto "$(sed -n '2p' "$tmp/argv")"
+      t "OpenCode selects writable build agent" --agent "$(sed -n '3p' "$tmp/argv")"
+      t "OpenCode build agent value" build "$(sed -n '4p' "$tmp/argv")"
+      t "OpenCode uses print logs" --print-logs "$(sed -n '5p' "$tmp/argv")"
       t "OpenCode receives one prompt argument" 'prompt with spaces; $HOME must stay literal' "$(tail -n 1 "$tmp/argv")"
       ;;
     codex)
@@ -80,6 +83,12 @@ MOCK
 run_success_case opencode opencode OPENROUTER_API_KEY selected-openrouter OPENROUTER_API_KEY opencode
 run_success_case codex codex OPENAI_API_KEY selected-openai CODEX_API_KEY codex
 run_success_case claude-code claude ANTHROPIC_API_KEY selected-anthropic ANTHROPIC_API_KEY claude-code
+
+# The production image deliberately pins the exact OpenCode release whose run
+# contract supports --auto and --agent. Do not silently drift to an invented
+# per-permission CLI flag: v1.18.16 handles permission prompts through --auto.
+t "OpenCode production CLI stays pinned at 1.18.16" "yes" "$(grep -Fq 'opencode-ai@1.18.16' "$ROOT/docker/review-repair-agent.Dockerfile" && echo yes || echo no)"
+t "OpenCode adapter does not use unsupported --permission flag" "absent" "$(grep -Eq -- '(^|[[:space:]])--permission([[:space:]]|$)' "$ROOT/scripts/agents/opencode.sh" && echo present || echo absent)"
 
 # A non-auth Codex provider failure must still be classified by the shared
 # run-agent loop, not mistaken for an unavailable CLI or an auth failure.

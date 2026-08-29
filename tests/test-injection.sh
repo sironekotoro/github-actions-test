@@ -42,8 +42,8 @@ chmod +x "$tmp/bin/opencode"
 code=$?
 t "T32 agent exits 0" "0" "$code"
 
-# opencode must have received exactly 5 args: run --print-logs -m model <prompt>
-t "T32 opencode arg count == 5" "5" "$(cat "$tmp/argcount" 2>/dev/null)"
+# opencode must receive the pinned non-interactive permission flags and one prompt.
+t "T32 opencode arg count == 8" "8" "$(cat "$tmp/argcount" 2>/dev/null)"
 built_prompt="$(cat "$tmp/agent-prompt.txt" 2>/dev/null)"
 t "T32 prompt passed as single last arg" "yes" "$(test "$(cat "$tmp/lastarg" 2>/dev/null)" = "$built_prompt" && echo yes || echo no)"
 
