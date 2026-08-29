@@ -9,10 +9,13 @@
 set -uo pipefail
 
 FAILURE_FILE="${RUNNER_TEMP:-/tmp}/failure_category"
+FAILURE_REASON_FILE="${RUNNER_TEMP:-/tmp}/failure_reason"
 SUMMARY_FILE="${GITHUB_STEP_SUMMARY:-/tmp/agent_step_summary.md}"
 
 mkdir -p "$(dirname "$FAILURE_FILE")"
 [ -f "$FAILURE_FILE" ] || : > "$FAILURE_FILE"
+mkdir -p "$(dirname "$FAILURE_REASON_FILE")"
+[ -f "$FAILURE_REASON_FILE" ] || : > "$FAILURE_REASON_FILE"
 mkdir -p "$(dirname "$SUMMARY_FILE")"
 [ -f "$SUMMARY_FILE" ] || : > "$SUMMARY_FILE"
 
@@ -68,6 +71,9 @@ log_error() { printf '[ERROR] %s\n' "$*" >&2; }
 
 set_failure() { printf '%s\n' "$1" > "$FAILURE_FILE"; }
 get_failure() { cat "$FAILURE_FILE" 2>/dev/null || echo UNKNOWN; }
+
+set_failure_reason() { printf '%s\n' "$1" > "$FAILURE_REASON_FILE"; }
+get_failure_reason() { cat "$FAILURE_REASON_FILE" 2>/dev/null || echo ""; }
 
 fail_with() {
   local category="$1"; shift
@@ -126,4 +132,40 @@ agent_run_clean() {
   else
     agent_exec_clean "$credential_var" "$credential_value" -- "$@" >"$logfile" 2>&1
   fi
+}
+
+# apply_agent_patch <target-dir> <patch-file> <diff-status>
+#
+# Shared trusted helper that validates and imports an untrusted agent patch.
+# Called identically from ordinary dispatch and review-repair paths.
+apply_agent_patch() {
+  local target_dir="$1" patch_file="$2" diff_status="$3"
+
+  # diff_status outside {0,1} => infrastructure failure, not patch error
+  [ "$diff_status" -eq 0 ] || [ "$diff_status" -eq 1 ] \
+    || fail_with "$CAT_AGENT_START" "could not create patch from isolated workspace"
+
+  # diff_status=0 => no changes from the agent
+  if [ "$diff_status" -eq 0 ]; then
+    set_failure_reason "NO_CHANGES"
+    fail_with "$CAT_AGENT_PATCH_INVALID" "agent patch produced no changes"
+  fi
+
+  # diff_status=1 with missing or zero-byte patch
+  if [ ! -f "$patch_file" ] || [ ! -s "$patch_file" ]; then
+    set_failure_reason "EMPTY_PATCH"
+    fail_with "$CAT_AGENT_PATCH_INVALID" "agent patch is missing or empty"
+  fi
+
+  # baseline git apply --check -p2 (no --whitespace=error)
+  git -C "$target_dir" apply --check -p2 "$patch_file" 2>/dev/null \
+    || { set_failure_reason "PATCH_PARSE_FAILED"; fail_with "$CAT_AGENT_PATCH_INVALID" "agent patch failed parse check"; }
+
+  # strict git apply --check --whitespace=error -p2
+  git -C "$target_dir" apply --check --whitespace=error -p2 "$patch_file" 2>/dev/null \
+    || { set_failure_reason "PATCH_VALIDATION_FAILED"; fail_with "$CAT_AGENT_PATCH_INVALID" "agent patch failed validation"; }
+
+  # final import (stderr suppressed)
+  git -C "$target_dir" apply --whitespace=error -p2 "$patch_file" 2>/dev/null \
+    || fail_with "$CAT_AGENT_PATCH_INVALID" "could not import agent patch"
 }
