@@ -169,3 +169,7 @@ CI (`.github/workflows/ci.yml`) が push / PR で実行される。
 ## インシデント時
 
 `REPOSITORY_IDENTITY_MISMATCH` やその他 failure category が出た場合は [docs/RUNBOOK.md](docs/RUNBOOK.md) を参照。
+
+## Cost and runner preflight
+
+Optional Phase A controls can defer paid inference below a protected budget floor and can detect an unavailable self-hosted runner before a live job is created. They are feature-gated for safe rollout; see [`docs/PHASE_A_BUDGET_RUNNER.md`](docs/PHASE_A_BUDGET_RUNNER.md).

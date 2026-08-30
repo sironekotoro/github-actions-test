@@ -20,6 +20,10 @@ status=""
 
 if [ "$decision" = "limit-reached" ]; then
   status="limit"
+elif [ "$decision" = "wait-budget" ]; then
+  status="waiting-budget"
+elif [ "$decision" = "wait-runner" ]; then
+  status="waiting-runner"
 elif [ "$decision" = "run" ] && [ "${RESERVE_OUTCOME:-}" = "success" ]; then
   if [ "${DISPATCH_OUTCOME:-}" = "success" ]; then
     status="dispatched"
@@ -28,7 +32,7 @@ elif [ "$decision" = "run" ] && [ "${RESERVE_OUTCOME:-}" = "success" ]; then
   fi
 fi
 
-if [ -n "$status" ] && [ -n "${TARGET_GH_TOKEN:-}" ]; then
+if [ -n "$status" ] && [ -n "${TARGET_GH_TOKEN:-}" ] && [ "$status" != waiting-budget ] && [ "$status" != waiting-runner ]; then
   GH_TOKEN="$TARGET_GH_TOKEN" REPAIR_STATUS="$status" \
     DETECTED_AT="$(jq -r '.request.detected_at // ""' "$TASK_FILE")" \
     DISPATCHED_AT="${DISPATCHED_AT:-}" \
@@ -53,6 +57,10 @@ if printf '%s' "$source_label" | grep -Eq '^issue#[1-9][0-9]*$' && [ -n "${DISPA
     message="📨 Review repair attempt $attempt dispatched for $repo PR #$pr. The hosted dispatcher has finished; execution continues on self-hosted infrastructure."
   elif [ "$status" = limit ]; then
     message="⛔ Review repair limit reached for $repo PR #$pr; no executor was dispatched."
+  elif [ "$status" = waiting-budget ]; then
+    message="⏸️ Review repair deferred for $repo PR #$pr: provider budget gate blocked paid inference. No repair attempt was consumed."
+  elif [ "$status" = waiting-runner ]; then
+    message="⏸️ Review repair deferred for $repo PR #$pr: no compatible self-hosted runner is available. No repair attempt was consumed."
   else
     message="❌ Review repair dispatch failed for $repo PR #$pr (category: ${category:-unknown})."
   fi
@@ -61,6 +69,7 @@ if printf '%s' "$source_label" | grep -Eq '^issue#[1-9][0-9]*$' && [ -n "${DISPA
 - Review ID: $review
 - Detected: $(jq -r '.request.detected_at // "n/a"' "$TASK_FILE")
 - Dispatched: ${DISPATCHED_AT:-n/a}
+- Wait reason: ${REPAIR_WAIT_REASON:-n/a}
 - Dispatcher run: ${GITHUB_SERVER_URL:-https://github.com}/$dispatcher/actions/runs/${GITHUB_RUN_ID:-0}" \
     >/dev/null 2>&1 || log_warn "could not post dispatch feedback to source issue"
 fi

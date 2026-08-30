@@ -25,7 +25,7 @@ t "existing Mac runner labels are accepted" "0|result=pass" "$?|$(tr -d '\n' < "
 
 t "workflow defaults dispatch input to self-hosted" "yes" "$(grep -A7 'runner_mode:' "$WORKFLOW" | grep -q 'default: self-hosted' && echo yes || echo no)"
 t "github job is explicitly dry-run only" "yes" "$(grep -q "runner_mode == 'github'.*dry_run == 'true'" "$WORKFLOW" && echo yes || echo no)"
-t "self-hosted mode has a separate job using configured labels" "yes" "$(grep -q 'agent_self_hosted:' "$WORKFLOW" && grep -q 'runs-on: \${{ fromJSON(vars.REVIEW_REPAIR_RUNNER_LABELS) }}' "$WORKFLOW" && echo yes || echo no)"
+t "self-hosted mode has a separate job using trusted routed labels" "yes" "$(grep -q 'agent_self_hosted:' "$WORKFLOW" && grep -q 'runs-on: \${{ fromJSON(needs.route.outputs.runner_labels) }}' "$WORKFLOW" && echo yes || echo no)"
 t "workflow contains no GitHub-hosted coding-agent step" "yes" "$(grep -Eq 'Run (same-repo|cross-repo) coding agent$|bash .*run-agent\.sh' "$WORKFLOW" && echo no || echo yes)"
 t "composite action rejects non-self-hosted execution" "yes" "$(grep -q 'Require isolated self-hosted execution' "$ACTION" && grep -q 'non-dry-run Agent Dispatch must use the isolated self-hosted executor' "$ACTION" && echo yes || echo no)"
 t "composite action has no hosted agent execution branch" "yes" "$(grep -q "inputs.execution_mode == 'github'" "$ACTION" && echo no || echo yes)"

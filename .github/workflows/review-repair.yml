@@ -76,9 +76,76 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: bash scripts/guard-repo.sh
 
+      - name: Check compatible self-hosted executor availability
+        id: runner
+        if: steps.context.outputs.decision == 'run' && steps.target.outputs.mode == 'same'
+        env:
+          RUNNER_ROUTER_ENABLED: ${{ vars.RUNNER_ROUTER_ENABLED || 'false' }}
+          RUNNER_STATUS_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+          RUNNER_REQUIRED_LABELS: ${{ vars.REVIEW_REPAIR_RUNNER_LABELS }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/check-runner-availability.mjs
+
+      - name: Check OpenRouter budget before review repair
+        id: budget
+        if: steps.context.outputs.decision == 'run' && steps.target.outputs.mode == 'same' && steps.runner.outputs.decision == 'run'
+        env:
+          AGENT: opencode
+          PROVIDER_BUDGET_GATE_ENABLED: ${{ vars.PROVIDER_BUDGET_GATE_ENABLED || 'false' }}
+          PROVIDER_BALANCE_WARN_USD: ${{ vars.PROVIDER_BALANCE_WARN_USD || '0.50' }}
+          PROVIDER_BALANCE_HARD_FLOOR_USD: ${{ vars.PROVIDER_BALANCE_HARD_FLOOR_USD || '0.25' }}
+          PROVIDER_JOB_MAX_USD: ${{ vars.PROVIDER_JOB_MAX_USD || '0.25' }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MANAGEMENT_KEY: ${{ secrets.OPENROUTER_MANAGEMENT_KEY }}
+        run: node scripts/provider-budget-preflight.mjs
+
+      - name: Reconcile review-repair budget alert
+        if: steps.budget.outputs.state != '' && steps.budget.outputs.state != 'disabled'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_ID: review-repair-${{ github.event.pull_request.number }}
+          BUDGET_PROVIDER: ${{ steps.budget.outputs.provider }}
+          BUDGET_STATE: ${{ steps.budget.outputs.state }}
+          BUDGET_AVAILABLE_USD: ${{ steps.budget.outputs.available_usd }}
+          BUDGET_HARD_FLOOR_USD: ${{ steps.budget.outputs.hard_floor_usd }}
+          BUDGET_REQUIRED_JOB_RESERVE_USD: ${{ steps.budget.outputs.required_job_reserve_usd }}
+          BILLING_EMAIL_ENABLED: ${{ vars.BILLING_EMAIL_ENABLED || 'false' }}
+          BILLING_ALERT_RECOVERY_EMAIL: ${{ vars.BILLING_ALERT_RECOVERY_EMAIL || 'false' }}
+          BILLING_ALERT_EMAIL_TO: ${{ vars.BILLING_ALERT_EMAIL_TO }}
+          BILLING_SMTP_HOST: ${{ vars.BILLING_SMTP_HOST }}
+          BILLING_SMTP_PORT: ${{ vars.BILLING_SMTP_PORT || '587' }}
+          BILLING_SMTP_FROM: ${{ vars.BILLING_SMTP_FROM }}
+          BILLING_SMTP_STARTTLS: ${{ vars.BILLING_SMTP_STARTTLS || 'true' }}
+          BILLING_SMTP_SSL: ${{ vars.BILLING_SMTP_SSL || 'false' }}
+          BILLING_SMTP_USER: ${{ secrets.BILLING_SMTP_USER }}
+          BILLING_SMTP_PASSWORD: ${{ secrets.BILLING_SMTP_PASSWORD }}
+        run: bash scripts/notify-budget-state.sh
+
+      - name: Resolve review-repair preflight
+        id: gate
+        if: steps.context.outputs.decision == 'run' && steps.target.outputs.mode == 'same'
+        shell: bash
+        env:
+          RUNNER_DECISION: ${{ steps.runner.outputs.decision }}
+          RUNNER_REASON: ${{ steps.runner.outputs.reason }}
+          BUDGET_DECISION: ${{ steps.budget.outputs.decision }}
+          BUDGET_REASON: ${{ steps.budget.outputs.reason }}
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_DECISION:-wait}" != run ]; then
+            echo 'decision=wait-runner' >> "$GITHUB_OUTPUT"
+            echo "reason=${RUNNER_REASON:-RUNNER_STATUS_UNKNOWN}" >> "$GITHUB_OUTPUT"
+          elif [ "${BUDGET_DECISION:-wait}" != pass ]; then
+            echo 'decision=wait-budget' >> "$GITHUB_OUTPUT"
+            echo "reason=${BUDGET_REASON:-PROVIDER_BUDGET_UNKNOWN}" >> "$GITHUB_OUTPUT"
+          else
+            echo 'decision=run' >> "$GITHUB_OUTPUT"
+            echo 'reason=' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Reserve review id and attempt
         id: reserve
-        if: steps.context.outputs.decision == 'run' && steps.target.outputs.mode == 'same'
+        if: steps.gate.outputs.decision == 'run'
         env:
           GH_TOKEN: ${{ github.token }}
           TASK_FILE: ${{ runner.temp }}/task.json
@@ -100,7 +167,8 @@ jobs:
         if: always() && steps.context.outputs.decision != ''
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
-          REPAIR_DECISION: ${{ steps.context.outputs.decision }}
+          REPAIR_DECISION: ${{ steps.gate.outputs.decision || steps.context.outputs.decision }}
+          REPAIR_WAIT_REASON: ${{ steps.gate.outputs.reason }}
           RESERVE_OUTCOME: ${{ steps.reserve.outcome }}
           DISPATCH_OUTCOME: ${{ steps.dispatch.outcome }}
           DISPATCHED_AT: ${{ steps.dispatch.outputs.dispatched_at }}
@@ -126,8 +194,50 @@ jobs:
         run: bash scripts/guard-dispatcher-repo.sh
       - name: Require configured self-hosted executor
         run: bash scripts/check-review-executor.sh
+      - name: Check compatible self-hosted executor availability
+        id: runner
+        env:
+          RUNNER_ROUTER_ENABLED: ${{ vars.RUNNER_ROUTER_ENABLED || 'false' }}
+          RUNNER_STATUS_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+          RUNNER_REQUIRED_LABELS: ${{ vars.REVIEW_REPAIR_RUNNER_LABELS }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/check-runner-availability.mjs
+      - name: Check OpenRouter budget before scheduled repair
+        id: budget
+        if: steps.runner.outputs.decision == 'run'
+        env:
+          AGENT: opencode
+          PROVIDER_BUDGET_GATE_ENABLED: ${{ vars.PROVIDER_BUDGET_GATE_ENABLED || 'false' }}
+          PROVIDER_BALANCE_WARN_USD: ${{ vars.PROVIDER_BALANCE_WARN_USD || '0.50' }}
+          PROVIDER_BALANCE_HARD_FLOOR_USD: ${{ vars.PROVIDER_BALANCE_HARD_FLOOR_USD || '0.25' }}
+          PROVIDER_JOB_MAX_USD: ${{ vars.PROVIDER_JOB_MAX_USD || '0.25' }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MANAGEMENT_KEY: ${{ secrets.OPENROUTER_MANAGEMENT_KEY }}
+        run: node scripts/provider-budget-preflight.mjs
+      - name: Reconcile scheduled review-repair budget alert
+        if: steps.budget.outputs.state != '' && steps.budget.outputs.state != 'disabled'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_ID: review-repair-scheduled
+          BUDGET_PROVIDER: ${{ steps.budget.outputs.provider }}
+          BUDGET_STATE: ${{ steps.budget.outputs.state }}
+          BUDGET_AVAILABLE_USD: ${{ steps.budget.outputs.available_usd }}
+          BUDGET_HARD_FLOOR_USD: ${{ steps.budget.outputs.hard_floor_usd }}
+          BUDGET_REQUIRED_JOB_RESERVE_USD: ${{ steps.budget.outputs.required_job_reserve_usd }}
+          BILLING_EMAIL_ENABLED: ${{ vars.BILLING_EMAIL_ENABLED || 'false' }}
+          BILLING_ALERT_RECOVERY_EMAIL: ${{ vars.BILLING_ALERT_RECOVERY_EMAIL || 'false' }}
+          BILLING_ALERT_EMAIL_TO: ${{ vars.BILLING_ALERT_EMAIL_TO }}
+          BILLING_SMTP_HOST: ${{ vars.BILLING_SMTP_HOST }}
+          BILLING_SMTP_PORT: ${{ vars.BILLING_SMTP_PORT || '587' }}
+          BILLING_SMTP_FROM: ${{ vars.BILLING_SMTP_FROM }}
+          BILLING_SMTP_STARTTLS: ${{ vars.BILLING_SMTP_STARTTLS || 'true' }}
+          BILLING_SMTP_SSL: ${{ vars.BILLING_SMTP_SSL || 'false' }}
+          BILLING_SMTP_USER: ${{ secrets.BILLING_SMTP_USER }}
+          BILLING_SMTP_PASSWORD: ${{ secrets.BILLING_SMTP_PASSWORD }}
+        run: bash scripts/notify-budget-state.sh
       - name: Build allowlisted target matrix
         id: matrix
+        if: steps.runner.outputs.decision == 'run' && steps.budget.outputs.decision == 'pass'
         env:
           DISPATCHER_REPOSITORY: ${{ github.repository }}
         run: bash scripts/build-review-matrix.sh
@@ -137,6 +247,7 @@ jobs:
     if: ${{ needs.cross-repo-plan.outputs.matrix != '' && needs.cross-repo-plan.outputs.matrix != '[]' }}
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         target: ${{ fromJSON(needs.cross-repo-plan.outputs.matrix) }}
     runs-on: ubuntu-latest
@@ -226,6 +337,7 @@ jobs:
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
           REPAIR_DECISION: ${{ steps.context.outputs.decision }}
+          REPAIR_WAIT_REASON: ''
           RESERVE_OUTCOME: ${{ steps.reserve.outcome }}
           DISPATCH_OUTCOME: ${{ steps.dispatch.outcome }}
           DISPATCHED_AT: ${{ steps.dispatch.outputs.dispatched_at }}

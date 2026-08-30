@@ -32,6 +32,8 @@ summary ""
 
 if [ -n "$issue_number" ]; then
   if [ -z "$category" ]; then
+    gh issue edit "$issue_number" --repo "$repo" --remove-label 'agent:waiting-budget' >/dev/null 2>&1 || true
+    gh issue edit "$issue_number" --repo "$repo" --remove-label 'agent:waiting-runner' >/dev/null 2>&1 || true
     body="✅ Agent task completed.
 - Run: $run_url
 - Branch: \`${branch:-n/a}\`
