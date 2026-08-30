@@ -351,7 +351,7 @@ async function run() {
     mock = await startMockServer(MOCK_BASE + 90);
     broker = await startBroker(MOCK_BASE + 90, MOCK_BASE + 91);
     resp = await httpRequest('POST', MOCK_BASE + 91, '/api/v1/chat/completions', 'test-capability-token-abc123', {
-      model: 'openrouter/deepseek/deepseek-v4-flash', messages: [{ role: 'user', content: 'hi' }]
+      model: 'openrouter/deepseek-v4-flash', messages: [{ role: 'user', content: 'hi' }]
     }, {
       'Proxy-Authorization': 'Basic abc123',
       'X-Forwarded-For': 'evil.com',
@@ -366,6 +366,7 @@ async function run() {
     // 12. Upstream authorization is injected, caller auth stripped
     section('Upstream authorization injection');
     const capturePort = MOCK_BASE + 300;
+    const managementCapturePort = MOCK_BASE + 302;
     const upstreamCapture = { headers: null };
     const capServer = http.createServer((req, res) => {
       upstreamCapture.headers = req.headers;
@@ -378,7 +379,8 @@ async function run() {
     });
     capServer.listen(capturePort, '127.0.0.1');
     await waitForPort(capturePort, 2000);
-    const capEnvBroker = await startBroker(capturePort, MOCK_BASE + 301, {
+    const captureMgmt = await startMockServer(managementCapturePort);
+    const capEnvBroker = await startBroker(managementCapturePort, MOCK_BASE + 301, {
       OPENROUTER_PROVIDER_API_URL: `http://127.0.0.1:${capturePort}`,
       BROKER_MAX_REQUESTS: '10',
     });
@@ -412,7 +414,8 @@ async function run() {
     t('upstream has Content-Type', 'present',
       uh && uh['content-type'] ? 'present' : 'absent');
     capServer.close();
-    capEnvBroker.kill(); await new Promise(r => setTimeout(r, 100));
+    capEnvBroker.kill('SIGTERM'); await new Promise(r => setTimeout(r, 300));
+    captureMgmt.kill('SIGKILL'); await new Promise(r => setTimeout(r, 100));
 
     // 13. Graceful key deletion on shutdown
     section('Graceful key deletion on shutdown');
