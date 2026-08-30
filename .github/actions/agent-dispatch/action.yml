@@ -11,10 +11,10 @@ inputs:
     description: Existing cross-repository feature flag value
     required: true
   app_id:
-    description: GitHub App id for cross-repository dispatch
+    description: GitHub App id for target-scoped publication
     required: false
   app_private_key:
-    description: GitHub App private key for cross-repository dispatch
+    description: GitHub App private key for target-scoped publication
     required: false
   openrouter_api_key:
     description: Legacy OpenRouter API key input
@@ -88,13 +88,42 @@ runs:
         GITHUB_REPOSITORY: ${{ github.repository }}
       run: bash scripts/guard-repo.sh
 
+    - name: Check target publication GitHub App configuration
+      id: cross_auth
+      if: steps.target.outputs.mode == 'cross' || (steps.target.outputs.mode == 'same' && steps.parse.outputs.dry_run != 'true')
+      shell: bash
+      env:
+        GH_APP_ID: ${{ inputs.app_id }}
+        GH_APP_PRIVATE_KEY: ${{ inputs.app_private_key }}
+      run: bash scripts/check-cross-repo-auth.sh
+
+    - name: Create target-scoped GitHub App token
+      id: app_token
+      if: (steps.target.outputs.mode == 'cross' || (steps.target.outputs.mode == 'same' && steps.parse.outputs.dry_run != 'true')) && steps.cross_auth.outputs.result == 'pass'
+      continue-on-error: true
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      with:
+        app-id: ${{ inputs.app_id }}
+        private-key: ${{ inputs.app_private_key }}
+        owner: ${{ steps.target.outputs.target_owner }}
+        repositories: ${{ steps.target.outputs.target_name }}
+        permission-contents: write
+        permission-pull-requests: write
+
+    - name: Classify GitHub App token failure
+      if: (steps.target.outputs.mode == 'cross' || (steps.target.outputs.mode == 'same' && steps.parse.outputs.dry_run != 'true')) && steps.cross_auth.outputs.result == 'pass' && steps.app_token.outcome != 'success'
+      shell: bash
+      run: |
+        source scripts/lib/common.sh
+        fail_with "$CAT_APP_TOKEN_FAILED" "could not create a target-scoped installation token"
+
     - name: Checkout same-repo target separately
       id: same_target_checkout
-      if: steps.target.outputs.mode == 'same' && steps.same_guard.outputs.result == 'pass'
+      if: steps.target.outputs.mode == 'same' && steps.same_guard.outputs.result == 'pass' && (steps.parse.outputs.dry_run == 'true' || steps.app_token.outcome == 'success')
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         repository: ${{ steps.target.outputs.target_repository }}
-        token: ${{ inputs.github_token }}
+        token: ${{ steps.parse.outputs.dry_run == 'true' && inputs.github_token || steps.app_token.outputs.token }}
         fetch-depth: 0
         path: target
         persist-credentials: true
@@ -107,35 +136,6 @@ runs:
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
       run: bash ../scripts/guard-target-repo.sh
-
-    - name: Check cross-repo GitHub App configuration
-      id: cross_auth
-      if: steps.target.outputs.mode == 'cross'
-      shell: bash
-      env:
-        GH_APP_ID: ${{ inputs.app_id }}
-        GH_APP_PRIVATE_KEY: ${{ inputs.app_private_key }}
-      run: bash scripts/check-cross-repo-auth.sh
-
-    - name: Create target-scoped GitHub App token
-      id: app_token
-      if: steps.target.outputs.mode == 'cross' && steps.cross_auth.outputs.result == 'pass'
-      continue-on-error: true
-      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-      with:
-        app-id: ${{ inputs.app_id }}
-        private-key: ${{ inputs.app_private_key }}
-        owner: ${{ steps.target.outputs.target_owner }}
-        repositories: ${{ steps.target.outputs.target_name }}
-        permission-contents: write
-        permission-pull-requests: write
-
-    - name: Classify GitHub App token failure
-      if: steps.target.outputs.mode == 'cross' && steps.cross_auth.outputs.result == 'pass' && steps.app_token.outcome != 'success'
-      shell: bash
-      run: |
-        source scripts/lib/common.sh
-        fail_with "$CAT_APP_TOKEN_FAILED" "could not create a target-scoped installation token"
 
     - name: Checkout cross-repo target
       id: target_checkout
@@ -192,7 +192,7 @@ runs:
       shell: bash
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
-        GH_TOKEN: ${{ inputs.github_token }}
+        GH_TOKEN: ${{ steps.app_token.outputs.token }}
         DISPATCH_MODE: same
       run: bash ../scripts/prepare-branch.sh
 
@@ -270,11 +270,12 @@ runs:
       shell: bash
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
-        GH_TOKEN: ${{ inputs.github_token }}
+        GH_TOKEN: ${{ steps.app_token.outputs.token }}
         DEFAULT_BRANCH: ${{ steps.prep_same.outputs.default_branch }}
         OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
         DISPATCH_MODE: same
         DISPATCHER_REPOSITORY: ${{ github.repository }}
+        DISPATCH_PRINCIPAL: ${{ steps.app_token.outputs.app-slug }}[bot]
         AGENT_TESTS_ALREADY_RAN: 'true'
         GIT_CONFIG_COUNT: '1'
         GIT_CONFIG_KEY_0: core.hooksPath
