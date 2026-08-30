@@ -143,11 +143,30 @@ jobs:
             echo 'reason=' >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Check target marker GitHub App configuration
+        if: steps.target.outputs.mode == 'same' && (steps.gate.outputs.decision == 'run' || steps.context.outputs.decision == 'limit-reached')
+        env:
+          GH_APP_ID: ${{ secrets.GH_APP_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: bash scripts/check-cross-repo-auth.sh
+
+      - name: Create same-repo target marker token
+        id: app_token
+        if: steps.target.outputs.mode == 'same' && (steps.gate.outputs.decision == 'run' || steps.context.outputs.decision == 'limit-reached')
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.target_owner }}
+          repositories: ${{ steps.target.outputs.target_name }}
+          permission-contents: read
+          permission-pull-requests: write
+
       - name: Reserve review id and attempt
         id: reserve
-        if: steps.gate.outputs.decision == 'run'
+        if: steps.gate.outputs.decision == 'run' && steps.app_token.outcome == 'success'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
           TASK_FILE: ${{ runner.temp }}/task.json
           REPAIR_STATUS: started
           DETECTED_AT: ${{ steps.clock.outputs.detected_at }}
@@ -172,7 +191,7 @@ jobs:
           RESERVE_OUTCOME: ${{ steps.reserve.outcome }}
           DISPATCH_OUTCOME: ${{ steps.dispatch.outcome }}
           DISPATCHED_AT: ${{ steps.dispatch.outputs.dispatched_at }}
-          TARGET_GH_TOKEN: ${{ github.token }}
+          TARGET_GH_TOKEN: ${{ steps.app_token.outputs.token }}
           DISPATCHER_GH_TOKEN: ${{ github.token }}
         run: bash scripts/post-review-dispatch-feedback.sh
 

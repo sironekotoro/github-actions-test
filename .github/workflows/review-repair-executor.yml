@@ -125,8 +125,7 @@ jobs:
           CROSS_REPO_ENABLED: 'true'
         run: bash scripts/authorize-target.sh
 
-      - name: Check cross-repo GitHub App configuration
-        if: steps.target.outputs.mode == 'cross'
+      - name: Check target publication GitHub App configuration
         working-directory: dispatcher
         env:
           GH_APP_ID: ${{ secrets.GH_APP_ID }}
@@ -135,7 +134,6 @@ jobs:
 
       - name: Create target-scoped executor token
         id: app_token
-        if: steps.target.outputs.mode == 'cross'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           app-id: ${{ secrets.GH_APP_ID }}
@@ -227,7 +225,7 @@ jobs:
         working-directory: target
         env:
           GH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
-          TARGET_GH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
+          TARGET_GH_TOKEN: ${{ steps.app_token.outputs.token }}
           TASK_FILE: ${{ runner.temp }}/task.json
         run: bash ../dispatcher/scripts/resume-review-branch.sh
 
@@ -235,7 +233,7 @@ jobs:
         id: executor_marker
         if: steps.resume.outputs.result == 'pass'
         env:
-          GH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
           TASK_FILE: ${{ runner.temp }}/task.json
           REPAIR_STATUS: executor-started
           EXECUTOR_STARTED_AT: ${{ steps.executor_clock.outputs.started_at }}
@@ -267,7 +265,7 @@ jobs:
         working-directory: target
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
-          PUSH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
+          PUSH_TOKEN: ${{ steps.app_token.outputs.token }}
           DISPATCH_MODE: ${{ steps.target.outputs.mode }}
           REPAIR_TESTS_ALREADY_RAN: 'true'
         run: bash ../dispatcher/scripts/commit-review-repair.sh
@@ -289,7 +287,7 @@ jobs:
           AGENT_RUNTIME_SECONDS: ${{ steps.agent.outputs.runtime_seconds }}
           EXECUTOR_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           COMMIT_OUTCOME: ${{ steps.commit.outcome }}
-          TARGET_GH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
+          TARGET_GH_TOKEN: ${{ steps.app_token.outputs.token }}
           DISPATCHER_GH_TOKEN: ${{ github.token }}
         run: bash dispatcher/scripts/post-review-feedback.sh
 
