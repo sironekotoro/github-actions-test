@@ -176,6 +176,23 @@ jobs:
           DISPATCHER_GH_TOKEN: ${{ github.token }}
         run: bash scripts/post-review-dispatch-feedback.sh
 
+      - name: Notification state ACTION_REQUIRED task=review-repair-${{ github.event.pull_request.number }} target=${{ github.repository }} reason=${{ steps.gate.outputs.reason || 'REPAIR_LIMIT_REACHED' }}
+        if: always() && (startsWith(steps.gate.outputs.decision, 'wait-') || steps.context.outputs.decision == 'limit-reached')
+        run: ':'
+
+      - name: Resolve review dispatcher notification failure category
+        id: notification_failure
+        if: failure()
+        shell: bash
+        run: |
+          reason="$(cat "$RUNNER_TEMP/failure_category" 2>/dev/null || true)"
+          [ -n "$reason" ] || reason='REPAIR_DISPATCH_FAILED'
+          printf 'reason=%s\n' "$reason" >> "$GITHUB_OUTPUT"
+
+      - name: Notification state TASK_FAILED task=review-repair-${{ github.event.pull_request.number }} target=${{ github.repository }} reason=${{ steps.notification_failure.outputs.reason || 'REPAIR_DISPATCH_FAILED' }}
+        if: failure()
+        run: ':'
+
   cross-repo-plan:
     if: ${{ vars.REVIEW_REPAIR_ENABLED == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
