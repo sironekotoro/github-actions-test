@@ -59,6 +59,13 @@ CAT_TARGET_DEFAULT_BRANCH="TARGET_DEFAULT_BRANCH_NOT_FOUND"
 CAT_TARGET_PUSH="TARGET_PUSH_FAILED"
 CAT_TARGET_PR="TARGET_PR_CREATE_FAILED"
 
+# Broker / provisioning categories.
+CAT_BROKER_AUTH_FAILED="BROKER_AUTH_FAILED"
+CAT_BROKER_PROVISION_FAILED="BROKER_PROVISION_FAILED"
+CAT_BROKER_CLEANUP_FAILED="BROKER_CLEANUP_FAILED"
+CAT_BROKER_UNAVAILABLE="BROKER_UNAVAILABLE"
+CAT_BROKER_CAPABILITY_FAILED="BROKER_CAPABILITY_GENERATION_FAILED"
+
 # Review-repair categories. Ignored review states and duplicate events are
 # reported as non-failing decisions; these categories are reserved for a
 # fail-closed safety stop or an exhausted bound.
@@ -249,6 +256,10 @@ agent_exec_clean() {
   [ -n "${NO_PROXY+x}" ] && clean_env+=("NO_PROXY=$NO_PROXY")
   [ -n "${SSL_CERT_FILE+x}" ] && clean_env+=("SSL_CERT_FILE=$SSL_CERT_FILE")
   [ -n "${NODE_EXTRA_CA_CERTS+x}" ] && clean_env+=("NODE_EXTRA_CA_CERTS=$NODE_EXTRA_CA_CERTS")
+  [ -n "${OPENCODE_CONFIG_CONTENT+x}" ] && clean_env+=("OPENCODE_CONFIG_CONTENT=$OPENCODE_CONFIG_CONTENT")
+  [ -n "${OPENCODE_BROKER_BASE_URL+x}" ] && clean_env+=("OPENCODE_BROKER_BASE_URL=$OPENCODE_BROKER_BASE_URL")
+  [ -n "${OPENROUTER_MODEL+x}" ] && clean_env+=("OPENROUTER_MODEL=$OPENROUTER_MODEL")
+  [ -n "${PROVIDER_BROKER_ENABLED+x}" ] && clean_env+=("PROVIDER_BROKER_ENABLED=$PROVIDER_BROKER_ENABLED")
   [ -n "$credential_var" ] && clean_env+=("$credential_var=$credential_value")
 
   env -i "${clean_env[@]}" "$@"
@@ -267,7 +278,82 @@ agent_run_clean() {
   fi
 }
 
-# apply_agent_patch <target-dir> <patch-file> <diff-status> [agent-log] [credential-value] [prompt-file]
+# generate_broker_capability <var_name>
+#
+# Generate a cryptographically random opaque per-run broker capability token.
+# The token is exported as the named variable and kept only in trusted memory/env.
+# Fails closed if generation fails. Never reuses any existing credential value.
+generate_broker_capability() {
+  local var_name="$1" cap
+  cap="$(node -e "
+    const crypto = require('crypto');
+    const buf = crypto.randomBytes(32);
+    process.stdout.write('brk-' + buf.toString('base64url'));
+  " 2>/dev/null)" || fail_with "$CAT_BROKER_CAPABILITY_FAILED" "capability generation failed"
+  [ -n "$cap" ] || fail_with "$CAT_BROKER_CAPABILITY_FAILED" "capability generation produced empty token"
+  printf -v "$var_name" '%s' "$cap"
+  export "$var_name"="$cap"
+}
+
+# setup_broker_network_topology <private_network> <egress_network> <broker_egress_network> <proxy_name> <egress_image> <run_key>
+#
+# Create and connect three networks for broker mode:
+#   (a) private_network (--internal): agent + broker only
+#   (b) broker_egress_network (--internal): broker + Squid only
+#   (c) egress_network (no --internal): Squid + external only
+# Squid starts on (b) and is connected to (c). Broker is NOT on (a) yet
+# (caller starts broker on (a) and connects to (b)).
+# Sets PROXY_BROKER_IP to Squid's address on (b) for broker to use as HTTP_PROXY.
+setup_broker_network_topology() {
+  local private_network="$1" egress_network="$2" broker_egress_network="$3"
+  local proxy_name="$4" egress_image="$5" run_key="$6"
+
+  docker network create --internal "$private_network" >/dev/null \
+    || fail_with "$CAT_BROKER_UNAVAILABLE" "could not create broker agent private network"
+  docker network create "$egress_network" >/dev/null \
+    || fail_with "$CAT_BROKER_UNAVAILABLE" "could not create broker egress network"
+  docker network create --internal "$broker_egress_network" >/dev/null \
+    || fail_with "$CAT_BROKER_UNAVAILABLE" "could not create broker internal egress network"
+
+  # Start Squid on broker_egress_network only (NOT private_network)
+  docker run --detach --name "$proxy_name" --network "$broker_egress_network" \
+    --read-only --user 31:31 --cap-drop=ALL --security-opt=no-new-privileges \
+    --tmpfs /run:rw,nosuid,nodev,noexec,mode=1777,size=16m \
+    --tmpfs /var/cache/squid:rw,nosuid,nodev,noexec,mode=1777,size=64m \
+    "$egress_image" >/dev/null \
+    || fail_with "$CAT_BROKER_UNAVAILABLE" "could not start broker egress proxy"
+  docker network connect "$egress_network" "$proxy_name" \
+    || fail_with "$CAT_BROKER_UNAVAILABLE" "could not connect broker egress proxy to external network"
+
+  # Get Squid address on the broker_egress_network (broker uses this as HTTP_PROXY)
+  local broker_proxy_ip
+  broker_proxy_ip="$(docker inspect "$proxy_name" 2>/dev/null \
+    | jq -r --arg network "$broker_egress_network" '.[0].NetworkSettings.Networks[$network].IPAddress // empty')"
+  [ -n "$broker_proxy_ip" ] || fail_with "$CAT_BROKER_UNAVAILABLE" "could not determine proxy address for broker"
+  export PROXY_BROKER_IP="$broker_proxy_ip"
+}
+
+# setup_standard_proxy <private_network> <egress_network> <proxy_name> <egress_image>
+#
+# Create and connect the standard two-network topology for non-broker mode.
+# Squid is on private_network (agent-facing) and egress_network (external).
+# Sets PROXY_IP to Squid's address on private_network.
+setup_standard_proxy() {
+  local private_network="$1" egress_network="$2" proxy_name="$3" egress_image="$4"
+
+  docker network create --internal "$private_network" >/dev/null \
+    || fail_with "$CAT_AGENT_START" "could not create isolated agent network"
+  docker network create "$egress_network" >/dev/null \
+    || fail_with "$CAT_AGENT_START" "could not create isolated egress network"
+  docker run --detach --name "$proxy_name" --network "$private_network" \
+    --read-only --user 31:31 --cap-drop=ALL --security-opt=no-new-privileges \
+    --tmpfs /run:rw,nosuid,nodev,noexec,mode=1777,size=16m \
+    --tmpfs /var/cache/squid:rw,nosuid,nodev,noexec,mode=1777,size=64m \
+    "$egress_image" >/dev/null \
+    || fail_with "$CAT_AGENT_START" "could not start restricted egress proxy"
+  docker network connect "$egress_network" "$proxy_name" \
+    || fail_with "$CAT_AGENT_START" "could not connect restricted egress proxy"
+}
 #
 # Shared trusted helper that validates and imports an untrusted agent patch.
 # Called identically from ordinary dispatch and review-repair paths.

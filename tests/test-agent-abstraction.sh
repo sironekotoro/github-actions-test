@@ -83,7 +83,7 @@ t "github dry-run + claude-code: agent is claude-code" "0|claude-code|github" "$
 source "$CREDENTIALS"
 
 # agent_allowed_profiles
-t "opencode allowed profiles" "openrouter" "$(agent_allowed_profiles opencode)"
+t "opencode allowed profiles" "openrouter openrouter-broker" "$(agent_allowed_profiles opencode)"
 t "codex allowed profiles" "openai-api chatgpt-subscription" "$(agent_allowed_profiles codex)"
 t "claude-code allowed profiles" "anthropic-api claude-subscription" "$(agent_allowed_profiles claude-code)"
 

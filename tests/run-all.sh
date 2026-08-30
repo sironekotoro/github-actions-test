@@ -17,6 +17,18 @@ for t in "$TESTS"/test-*.sh; do
     overall=1
   fi
 done
+
+# Run Node.js-based test suites
+for t in "$TESTS"/test-*.mjs; do
+  echo ""
+  echo "### $(basename "$t")"
+  if node "$t"; then
+    echo "SUITE_OK: $(basename "$t")"
+  else
+    echo "SUITE_FAIL: $(basename "$t")"
+    overall=1
+  fi
+done
 echo ""
 echo "== summary =="
 [ "$overall" -eq 0 ] && echo "ALL SUITES PASSED" || echo "SOME SUITES FAILED"

@@ -29,6 +29,31 @@ agent_get_version() {
 agent_run() {
   local model="$1" prompt="$2" logfile="$3" max_runtime="$4"
   local credential_var="$5" credential_value="$6"
+
+  # When broker is enabled, configure OpenCode to point at the local broker
+  # for its OpenRouter provider base URL. Build a single trusted JSON document
+  # using the provider.openrouter.options.baseURL structure accepted by
+  # pinned opencode-ai@1.18.16. This trusted override wins over project config.
+  if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ -n "${OPENCODE_BROKER_BASE_URL:-}" ]; then
+    local broker_config
+    broker_config="$(node -e "
+      const existing = process.env.OPENCODE_CONFIG_CONTENT || '{}';
+      try {
+        const base = JSON.parse(existing);
+        base.provider = base.provider || {};
+        base.provider.openrouter = base.provider.openrouter || {};
+        base.provider.openrouter.options = base.provider.openrouter.options || {};
+        base.provider.openrouter.options.baseURL = process.env.OPENCODE_BROKER_BASE_URL;
+        process.stdout.write(JSON.stringify(base));
+      } catch(e) {
+        process.stderr.write('OPENCODE_CONFIG_CONTENT parse error: ' + e.message);
+        process.exit(1);
+      }
+    " 2>/dev/null)" || fail_with "$CAT_AGENT_START" "could not build broker config"
+    OPENCODE_CONFIG_CONTENT="$broker_config"
+    export OPENCODE_CONFIG_CONTENT
+  fi
+
   agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
     opencode run --auto --agent build --print-logs -m "$model" "$prompt"
 }

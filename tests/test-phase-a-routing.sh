@@ -25,7 +25,8 @@ t "budget warning defaults to 0.50" yes "$(grep -q "PROVIDER_BALANCE_WARN_USD.*'
 t "Phase A job reserve defaults to 0.25" yes "$(grep -q "PROVIDER_JOB_MAX_USD.*'0.25'" "$agent" && grep -q "PROVIDER_JOB_MAX_USD.*'0.25'" "$review" && echo yes || echo no)"
 t "billing alerts receive required job reserve context" yes "$(grep -q 'budget_required_job_reserve_usd:' "$agent" && grep -q 'BUDGET_REQUIRED_JOB_RESERVE_USD:' "$agent" && [ "$(grep -c 'BUDGET_REQUIRED_JOB_RESERVE_USD:' "$review")" -ge 2 ] && echo yes || echo no)"
 t "runner status API version is stable and explicit" yes "$(grep -q "X-GitHub-Api-Version.*2022-11-28" "$runner_check" && echo yes || echo no)"
-t "provider management credentials stay out of untrusted composite" absent "$(grep -Eq 'OPENROUTER_MANAGEMENT_KEY|OPENAI_ADMIN_KEY|RUNNER_STATUS_TOKEN' "$ROOT/.github/actions/agent-dispatch/action.yml" && echo present || echo absent)"
+t "provider management credentials stay out of agent container env" absent "$(grep -Eq '\-\-env OPENROUTER_MANAGEMENT_KEY' "$ROOT/scripts/run-agent-dispatch-container.sh" && echo present || echo absent)"
+t "no OPENAI_ADMIN_KEY in composite" absent "$(grep -Eq 'OPENAI_ADMIN_KEY|RUNNER_STATUS_TOKEN' "$ROOT/.github/actions/agent-dispatch/action.yml" && echo present || echo absent)"
 t "billing SMTP password stays out of untrusted composite" absent "$(grep -q 'BILLING_SMTP_PASSWORD' "$ROOT/.github/actions/agent-dispatch/action.yml" && echo present || echo absent)"
 t "waiting states have dedicated feedback job" yes "$(grep -q 'post-route-waiting.sh' "$agent" && echo yes || echo no)"
 
