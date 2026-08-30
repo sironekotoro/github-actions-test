@@ -351,7 +351,7 @@ async function run() {
     mock = await startMockServer(MOCK_BASE + 90);
     broker = await startBroker(MOCK_BASE + 90, MOCK_BASE + 91);
     resp = await httpRequest('POST', MOCK_BASE + 91, '/api/v1/chat/completions', 'test-capability-token-abc123', {
-      model: 'openrouter/deepseek-v4-flash', messages: [{ role: 'user', content: 'hi' }]
+      model: 'openrouter/deepseek/deepseek-v4-flash', messages: [{ role: 'user', content: 'hi' }]
     }, {
       'Proxy-Authorization': 'Basic abc123',
       'X-Forwarded-For': 'evil.com',
@@ -514,8 +514,10 @@ async function run() {
   t('dispatch removes proxy env for broker', 'yes', containerScript.includes('agent_proxy_env') ? 'yes' : 'no');
   t('dispatch uses setup_broker_network_topology for broker', 'yes',
     containerScript.includes('setup_broker_network_topology') ? 'yes' : 'no');
+  const dispatchNetworkSetup = containerScript.split('# Start broker container when broker is enabled')[1]?.split('agent_root=')[0] || '';
+  const dispatchBrokerBranch = dispatchNetworkSetup.split('\nelse\n')[0] || '';
   t('dispatch does not call setup_standard_proxy in broker mode', 'yes',
-    /if.*PROVIDER_BROKER_ENABLED.*profile.*openrouter-broker/.test(containerScript) && containerScript.indexOf('setup_standard_proxy') > containerScript.indexOf('if.*PROVIDER_BROKER_ENABLED') ? 'no' : 'yes');
+    dispatchBrokerBranch.includes('setup_standard_proxy') ? 'no' : 'yes');
   t('broker not connected to egress_network', 'yes',
     !containerScript.includes('connect.*broker.*egress_network') ? 'yes' : 'no');
   t('broker uses BROKER_PROXY_URL for egress', 'yes',
@@ -574,8 +576,10 @@ async function run() {
     rrContainerScript.includes('generate_broker_capability') ? 'yes' : 'no');
   t('review-repair uses setup_broker_network_topology', 'yes',
     rrContainerScript.includes('setup_broker_network_topology') ? 'yes' : 'no');
+  const reviewNetworkSetup = rrContainerScript.split('# Start broker container when broker is enabled')[1]?.split('agent_root=')[0] || '';
+  const reviewBrokerBranch = reviewNetworkSetup.split('\nelse\n')[0] || '';
   t('review-repair does not create networks inline when broker enabled', 'yes',
-    rrContainerScript.includes('docker network create --internal "$private_network"') ? 'no' : 'yes');
+    reviewBrokerBranch.includes('docker network create --internal "$private_network"') ? 'no' : 'yes');
   t('review-repair container graceful broker shutdown', 'yes',
     rrContainerScript.includes('docker stop --time 10') ? 'yes' : 'no');
   t('review-repair broker uses BROKER_PROXY_URL', 'yes',
