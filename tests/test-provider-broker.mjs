@@ -40,10 +40,11 @@ function waitForPort(port, timeoutMs = 3000) {
     const start = Date.now();
     function check() {
       const req = http.get(`http://127.0.0.1:${port}/health`, (res) => {
+        // Readiness means the HTTP listener is accepting connections. Some
+        // focused mock servers intentionally do not implement /health and
+        // return 404; that is still a valid readiness signal.
         res.resume();
-        if (res.statusCode === 200) resolve();
-        else if (Date.now() - start > timeoutMs) reject(new Error('timeout'));
-        else setTimeout(check, 100);
+        resolve();
       });
       req.on('error', () => {
         if (Date.now() - start > timeoutMs) reject(new Error('timeout'));
