@@ -1,2 +1,2 @@
 # App Publication E2E
-Initial acceptance marker.
+Review-repair acceptance marker.
