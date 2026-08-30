@@ -54,6 +54,7 @@ jobs:
       agent: ${{ steps.parse.outputs.agent }}
       dry_run: ${{ steps.parse.outputs.dry_run }}
       task_id: ${{ steps.parse.outputs.task_id }}
+      target_repository: ${{ steps.parse.outputs.target_repository }}
       route_decision: ${{ steps.route_policy.outputs.decision }}
       wait_reason: ${{ steps.route_policy.outputs.reason }}
       runner_labels: ${{ steps.route_policy.outputs.runner_labels }}
@@ -342,6 +343,10 @@ jobs:
           WAIT_REASON: ${{ needs.route.outputs.wait_reason }}
         run: bash scripts/post-route-waiting.sh
 
+      - name: Notification state ACTION_REQUIRED task=${{ needs.route.outputs.task_id }} target=${{ needs.route.outputs.target_repository }} reason=${{ needs.route.outputs.wait_reason || 'ACTION_REQUIRED' }}
+        if: startsWith(needs.route.outputs.route_decision, 'wait-')
+        run: ':'
+
   agent_self_hosted:
     name: Agent Dispatch (self-hosted isolated)
     needs: route
@@ -372,3 +377,20 @@ jobs:
           agent_credential: ${{ needs.route.outputs.agent == 'opencode' && secrets.OPENROUTER_API_KEY || needs.route.outputs.agent == 'codex' && secrets.OPENAI_API_KEY || needs.route.outputs.agent == 'claude-code' && secrets.ANTHROPIC_API_KEY || '' }}
           openrouter_model: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
           agent: ${{ needs.route.outputs.agent || 'opencode' }}
+
+      - name: Resolve Agent Dispatch notification failure category
+        id: notification_failure
+        if: failure()
+        shell: bash
+        run: |
+          reason="$(cat "$RUNNER_TEMP/failure_category" 2>/dev/null || true)"
+          [ -n "$reason" ] || reason='AGENT_DISPATCH_FAILED'
+          printf 'reason=%s\n' "$reason" >> "$GITHUB_OUTPUT"
+
+      - name: Notification state TASK_FAILED task=${{ needs.route.outputs.task_id }} target=${{ needs.route.outputs.target_repository }} reason=${{ steps.notification_failure.outputs.reason || 'AGENT_DISPATCH_FAILED' }}
+        if: failure()
+        run: ':'
+
+      - name: Notification state TASK_COMPLETED task=${{ needs.route.outputs.task_id }} target=${{ needs.route.outputs.target_repository }} reason=none
+        if: success()
+        run: ':'

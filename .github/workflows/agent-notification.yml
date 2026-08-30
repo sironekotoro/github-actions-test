@@ -1,0 +1,94 @@
+name: Agent Notification Gateway
+
+on:
+  workflow_run:
+    workflows:
+      - Agent Dispatch
+      - Agent Review Repair Dispatcher
+      - Agent Review Repair Executor
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  notify:
+    name: Deliver immediate lifecycle notification
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Classify completed source workflow
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          jobs="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/jobs?per_page=100")"
+          marker="$(jq -r '[.jobs[].steps[]? | select(.conclusion == "success" and (.name | startswith("Notification state "))) | .name] | last // empty' <<<"$jobs")"
+
+          event=''
+          task_id="workflow-$SOURCE_RUN_ID"
+          target="$GITHUB_REPOSITORY"
+          reason=''
+          if [[ "$marker" =~ ^Notification\ state\ (TASK_COMPLETED|TASK_FAILED|ACTION_REQUIRED)\ task=([^[:space:]]+)\ target=([^[:space:]]+)\ reason=([^[:space:]]+)$ ]]; then
+            event="${BASH_REMATCH[1]}"
+            task_id="${BASH_REMATCH[2]}"
+            target="${BASH_REMATCH[3]}"
+            reason="${BASH_REMATCH[4]}"
+          else
+            case "$SOURCE_CONCLUSION" in
+              success|skipped|neutral)
+                echo 'notify=false' >> "$GITHUB_OUTPUT"
+                exit 0
+                ;;
+              action_required)
+                event='ACTION_REQUIRED'
+                ;;
+              *)
+                event='TASK_FAILED'
+                ;;
+            esac
+            reason="WORKFLOW_${SOURCE_CONCLUSION^^}"
+          fi
+
+          echo 'notify=true' >> "$GITHUB_OUTPUT"
+          echo "event=$event" >> "$GITHUB_OUTPUT"
+          echo "task_id=$task_id" >> "$GITHUB_OUTPUT"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "title=$SOURCE_WORKFLOW: $event" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout trusted notifier code
+        if: steps.classify.outputs.notify == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Deliver lifecycle notification
+        if: steps.classify.outputs.notify == 'true'
+        env:
+          NOTIFICATION_EVENT: ${{ steps.classify.outputs.event }}
+          NOTIFICATION_TASK_ID: ${{ steps.classify.outputs.task_id }}
+          NOTIFICATION_TARGET_REPOSITORY: ${{ steps.classify.outputs.target }}
+          NOTIFICATION_REASON: ${{ steps.classify.outputs.reason }}
+          NOTIFICATION_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          NOTIFICATION_SOURCE_URL: ${{ github.event.workflow_run.html_url }}
+          NOTIFICATION_TITLE: ${{ steps.classify.outputs.title }}
+          AGENT_NOTIFICATION_EMAIL_ENABLED: ${{ vars.AGENT_NOTIFICATION_EMAIL_ENABLED || 'false' }}
+          AGENT_NOTIFICATION_EMAIL_TO: ${{ vars.AGENT_NOTIFICATION_EMAIL_TO || vars.BILLING_ALERT_EMAIL_TO }}
+          BILLING_SMTP_HOST: ${{ vars.BILLING_SMTP_HOST }}
+          BILLING_SMTP_PORT: ${{ vars.BILLING_SMTP_PORT || '587' }}
+          BILLING_SMTP_FROM: ${{ vars.BILLING_SMTP_FROM }}
+          BILLING_SMTP_STARTTLS: ${{ vars.BILLING_SMTP_STARTTLS || 'true' }}
+          BILLING_SMTP_SSL: ${{ vars.BILLING_SMTP_SSL || 'false' }}
+          BILLING_SMTP_USER: ${{ secrets.BILLING_SMTP_USER }}
+          BILLING_SMTP_PASSWORD: ${{ secrets.BILLING_SMTP_PASSWORD }}
+          AGENT_NOTIFICATION_SLACK_ENABLED: ${{ vars.AGENT_NOTIFICATION_SLACK_ENABLED || 'false' }}
+          AGENT_NOTIFICATION_SLACK_WEBHOOK_URL: ${{ secrets.AGENT_NOTIFICATION_SLACK_WEBHOOK_URL }}
+        run: bash scripts/deliver-agent-notification.sh

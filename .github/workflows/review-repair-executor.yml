@@ -292,3 +292,20 @@ jobs:
           TARGET_GH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
           DISPATCHER_GH_TOKEN: ${{ github.token }}
         run: bash dispatcher/scripts/post-review-feedback.sh
+
+      - name: Resolve review executor notification failure category
+        id: notification_failure
+        if: failure()
+        shell: bash
+        run: |
+          reason="$(cat "$RUNNER_TEMP/failure_category" 2>/dev/null || true)"
+          [ -n "$reason" ] || reason='REPAIR_EXECUTOR_FAILED'
+          printf 'reason=%s\n' "$reason" >> "$GITHUB_OUTPUT"
+
+      - name: Notification state TASK_FAILED task=review-repair-${{ inputs.pr_number }} target=${{ inputs.target_repository }} reason=${{ steps.notification_failure.outputs.reason || 'REPAIR_EXECUTOR_FAILED' }}
+        if: failure()
+        run: ':'
+
+      - name: Notification state TASK_COMPLETED task=review-repair-${{ inputs.pr_number }} target=${{ inputs.target_repository }} reason=none
+        if: success() && steps.commit.outcome == 'success'
+        run: ':'
