@@ -1,0 +1,119 @@
+name: Provider Broker Docker E2E
+
+on:
+  issues:
+    types: [opened]
+
+concurrency:
+  group: provider-broker-docker-e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  plan:
+    name: Validate broker E2E request
+    if: >-
+      github.actor == 'sironekotoro' &&
+      github.event.issue.user.login == 'sironekotoro' &&
+      github.event.issue.title == 'Provider Broker Docker E2E'
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      candidate_sha: ${{ steps.resolve.outputs.candidate_sha }}
+    steps:
+      - name: Resolve same-repo candidate PR
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          if [[ "$ISSUE_BODY" =~ ^PR_NUMBER=([0-9]+)$ ]]; then
+            pr_number="${BASH_REMATCH[1]}"
+          else
+            echo 'E2E_INVALID_REQUEST: body must be exactly PR_NUMBER=<number>' >&2
+            exit 1
+          fi
+
+          pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
+          state="$(jq -r '.state' <<<"$pr_json")"
+          head_repo="$(jq -r '.head.repo.full_name // ""' <<<"$pr_json")"
+          candidate_sha="$(jq -r '.head.sha // ""' <<<"$pr_json")"
+
+          [[ "$state" == open ]] || {
+            echo "E2E_INVALID_REQUEST: PR #${pr_number} is not open" >&2
+            exit 1
+          }
+          [[ "$head_repo" == "$GITHUB_REPOSITORY" ]] || {
+            echo "E2E_INVALID_REQUEST: PR #${pr_number} is not a same-repo PR" >&2
+            exit 1
+          }
+          [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'E2E_INVALID_REQUEST: invalid candidate SHA' >&2
+            exit 1
+          }
+
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
+          echo "Validated PR #${pr_number} at ${candidate_sha}"
+
+  docker-e2e:
+    name: Provider broker Docker security acceptance
+    needs: plan
+    runs-on: [self-hosted, review-repair, macOS, ARM64]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted acceptance harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: master
+          path: trusted
+          persist-credentials: false
+
+      - name: Checkout same-repo candidate without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.plan.outputs.candidate_sha }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Verify trusted harness checkout
+        shell: bash
+        working-directory: trusted
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse --abbrev-ref HEAD)" == master ]]
+          [[ -f scripts/provider-broker-docker-e2e.sh ]]
+          bash -n scripts/provider-broker-docker-e2e.sh
+
+      - name: Run local-only Docker topology acceptance
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.plan.outputs.candidate_sha }}
+          CANDIDATE_PR: ${{ needs.plan.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          echo "Testing PR #${CANDIDATE_PR} at ${CANDIDATE_SHA}"
+          bash trusted/scripts/provider-broker-docker-e2e.sh "$GITHUB_WORKSPACE/candidate"
+
+      - name: Acceptance summary
+        if: always()
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.plan.outputs.candidate_sha }}
+          CANDIDATE_PR: ${{ needs.plan.outputs.pr_number }}
+        run: |
+          {
+            echo '## Provider Broker Docker E2E'
+            echo
+            echo "- PR: #${CANDIDATE_PR}"
+            echo "- Candidate: \`${CANDIDATE_SHA}\`"
+            echo '- Provider/model inference: **0** (local mock only)'
+            echo '- Secrets/provider credentials: **not provided to this job**'
+          } >> "$GITHUB_STEP_SUMMARY"
