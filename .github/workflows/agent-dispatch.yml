@@ -53,12 +53,35 @@ jobs:
       runner_mode: ${{ steps.parse.outputs.runner_mode }}
       agent: ${{ steps.parse.outputs.agent }}
       dry_run: ${{ steps.parse.outputs.dry_run }}
+      task_id: ${{ steps.parse.outputs.task_id }}
+      route_decision: ${{ steps.route_policy.outputs.decision }}
+      wait_reason: ${{ steps.route_policy.outputs.reason }}
+      runner_labels: ${{ steps.route_policy.outputs.runner_labels }}
+      runner_state: ${{ steps.runner.outputs.state }}
+      budget_state: ${{ steps.budget.outputs.state }}
+      budget_reason: ${{ steps.budget.outputs.reason }}
+      budget_provider: ${{ steps.budget.outputs.provider }}
+      budget_available_usd: ${{ steps.budget.outputs.available_usd }}
+      budget_hard_floor_usd: ${{ steps.budget.outputs.hard_floor_usd }}
+      budget_warning_usd: ${{ steps.budget.outputs.warning_usd }}
+      budget_job_spendable_usd: ${{ steps.budget.outputs.job_spendable_usd }}
+      budget_required_job_reserve_usd: ${{ steps.budget.outputs.required_job_reserve_usd }}
     steps:
       - name: Checkout dispatcher repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Authorize actor before control-plane preflight
+        id: authorize
+        env:
+          ACTOR_ALLOWLIST: 'sironekotoro'
+          GH_ACTOR: ${{ github.actor }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE_SENDER: ${{ github.event.sender.login }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash scripts/authorize-actor.sh
 
       - name: Parse task and select runner mode
         id: parse
@@ -72,6 +95,69 @@ jobs:
         env:
           AGENT_DISPATCH_RUNNER_LABELS: ${{ vars.REVIEW_REPAIR_RUNNER_LABELS }}
         run: bash scripts/check-agent-dispatch-runner.sh
+
+      - name: Check compatible self-hosted runner availability
+        id: runner
+        if: steps.parse.outputs.runner_mode == 'self-hosted' && steps.parse.outputs.dry_run != 'true'
+        env:
+          RUNNER_ROUTER_ENABLED: ${{ vars.RUNNER_ROUTER_ENABLED || 'false' }}
+          RUNNER_STATUS_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+          RUNNER_REQUIRED_LABELS: ${{ vars.REVIEW_REPAIR_RUNNER_LABELS }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/check-runner-availability.mjs
+
+      - name: Check paid provider budget
+        id: budget
+        if: steps.parse.outputs.runner_mode == 'self-hosted' && steps.parse.outputs.dry_run != 'true' && steps.runner.outputs.decision == 'run'
+        env:
+          AGENT: ${{ steps.parse.outputs.agent }}
+          PROVIDER_BUDGET_GATE_ENABLED: ${{ vars.PROVIDER_BUDGET_GATE_ENABLED || 'false' }}
+          PROVIDER_BALANCE_WARN_USD: ${{ vars.PROVIDER_BALANCE_WARN_USD || '0.50' }}
+          PROVIDER_BALANCE_HARD_FLOOR_USD: ${{ vars.PROVIDER_BALANCE_HARD_FLOOR_USD || '0.25' }}
+          PROVIDER_JOB_MAX_USD: ${{ vars.PROVIDER_JOB_MAX_USD || '0.25' }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MANAGEMENT_KEY: ${{ secrets.OPENROUTER_MANAGEMENT_KEY }}
+          OPENAI_ADMIN_KEY: ${{ secrets.OPENAI_ADMIN_KEY }}
+          OPENAI_MONTHLY_BUDGET_USD: ${{ vars.OPENAI_MONTHLY_BUDGET_USD }}
+        run: node scripts/provider-budget-preflight.mjs
+
+      - name: Resolve execution route
+        id: route_policy
+        shell: bash
+        env:
+          RUNNER_MODE: ${{ steps.parse.outputs.runner_mode }}
+          DRY_RUN: ${{ steps.parse.outputs.dry_run }}
+          RUNNER_DECISION: ${{ steps.runner.outputs.decision }}
+          RUNNER_REASON: ${{ steps.runner.outputs.reason }}
+          RUNNER_LABELS: ${{ steps.runner.outputs.runner_labels }}
+          FALLBACK_RUNNER_LABELS: ${{ vars.REVIEW_REPAIR_RUNNER_LABELS }}
+          BUDGET_DECISION: ${{ steps.budget.outputs.decision }}
+          BUDGET_REASON: ${{ steps.budget.outputs.reason }}
+        run: |
+          set -euo pipefail
+          decision=''
+          reason=''
+          labels="${RUNNER_LABELS:-${FALLBACK_RUNNER_LABELS:-[]}}"
+          if [ "$RUNNER_MODE" = github ] && [ "$DRY_RUN" = true ]; then
+            decision=github-dry-run
+            labels='[]'
+          elif [ "$RUNNER_MODE" = self-hosted ] && [ "$DRY_RUN" = true ]; then
+            decision=run-self-hosted
+          elif [ "$RUNNER_MODE" = self-hosted ] && [ "${RUNNER_DECISION:-wait}" != run ]; then
+            decision=wait-runner
+            reason="${RUNNER_REASON:-RUNNER_STATUS_UNKNOWN}"
+          elif [ "$RUNNER_MODE" = self-hosted ] && [ "${BUDGET_DECISION:-wait}" != pass ]; then
+            decision=wait-budget
+            reason="${BUDGET_REASON:-PROVIDER_BUDGET_UNKNOWN}"
+          elif [ "$RUNNER_MODE" = self-hosted ]; then
+            decision=run-self-hosted
+          else
+            echo 'INVALID_PAYLOAD: unresolved runner route' >&2
+            exit 1
+          fi
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "runner_labels=$labels" >> "$GITHUB_OUTPUT"
 
   agent_github:
     name: Agent Dispatch (GitHub-hosted dry-run only)
@@ -210,11 +296,57 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: bash scripts/post-feedback.sh
 
+  control_feedback:
+    name: Agent Dispatch control-plane feedback
+    needs: route
+    if: needs.route.result == 'success' && (startsWith(needs.route.outputs.route_decision, 'wait-') || contains(fromJSON('["ok","warning","blocked","unknown"]'), needs.route.outputs.budget_state))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout trusted dispatcher control code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Reconcile provider budget alert and email
+        if: needs.route.outputs.budget_state != '' && needs.route.outputs.budget_state != 'disabled'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_ID: ${{ needs.route.outputs.task_id }}
+          BUDGET_PROVIDER: ${{ needs.route.outputs.budget_provider }}
+          BUDGET_STATE: ${{ needs.route.outputs.budget_state }}
+          BUDGET_AVAILABLE_USD: ${{ needs.route.outputs.budget_available_usd }}
+          BUDGET_HARD_FLOOR_USD: ${{ needs.route.outputs.budget_hard_floor_usd }}
+          BUDGET_REQUIRED_JOB_RESERVE_USD: ${{ needs.route.outputs.budget_required_job_reserve_usd }}
+          BILLING_EMAIL_ENABLED: ${{ vars.BILLING_EMAIL_ENABLED || 'false' }}
+          BILLING_ALERT_RECOVERY_EMAIL: ${{ vars.BILLING_ALERT_RECOVERY_EMAIL || 'false' }}
+          BILLING_ALERT_EMAIL_TO: ${{ vars.BILLING_ALERT_EMAIL_TO }}
+          BILLING_SMTP_HOST: ${{ vars.BILLING_SMTP_HOST }}
+          BILLING_SMTP_PORT: ${{ vars.BILLING_SMTP_PORT || '587' }}
+          BILLING_SMTP_FROM: ${{ vars.BILLING_SMTP_FROM }}
+          BILLING_SMTP_STARTTLS: ${{ vars.BILLING_SMTP_STARTTLS || 'true' }}
+          BILLING_SMTP_SSL: ${{ vars.BILLING_SMTP_SSL || 'false' }}
+          BILLING_SMTP_USER: ${{ secrets.BILLING_SMTP_USER }}
+          BILLING_SMTP_PASSWORD: ${{ secrets.BILLING_SMTP_PASSWORD }}
+        run: bash scripts/notify-budget-state.sh
+
+      - name: Record deferred task and park ready label
+        if: startsWith(needs.route.outputs.route_decision, 'wait-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ROUTE_DECISION: ${{ needs.route.outputs.route_decision }}
+          WAIT_REASON: ${{ needs.route.outputs.wait_reason }}
+        run: bash scripts/post-route-waiting.sh
+
   agent_self_hosted:
     name: Agent Dispatch (self-hosted isolated)
     needs: route
-    if: needs.route.result == 'success' && needs.route.outputs.runner_mode == 'self-hosted'
-    runs-on: ${{ fromJSON(vars.REVIEW_REPAIR_RUNNER_LABELS) }}
+    if: needs.route.result == 'success' && needs.route.outputs.route_decision == 'run-self-hosted'
+    runs-on: ${{ fromJSON(needs.route.outputs.runner_labels) }}
     timeout-minutes: 45
     permissions:
       contents: write
