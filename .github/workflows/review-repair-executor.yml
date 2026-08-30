@@ -233,7 +233,7 @@ jobs:
         id: executor_marker
         if: steps.resume.outputs.result == 'pass'
         env:
-          GH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
           TASK_FILE: ${{ runner.temp }}/task.json
           REPAIR_STATUS: executor-started
           EXECUTOR_STARTED_AT: ${{ steps.executor_clock.outputs.started_at }}
@@ -287,7 +287,7 @@ jobs:
           AGENT_RUNTIME_SECONDS: ${{ steps.agent.outputs.runtime_seconds }}
           EXECUTOR_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           COMMIT_OUTCOME: ${{ steps.commit.outcome }}
-          TARGET_GH_TOKEN: ${{ steps.target.outputs.mode == 'same' && github.token || steps.app_token.outputs.token }}
+          TARGET_GH_TOKEN: ${{ steps.app_token.outputs.token }}
           DISPATCHER_GH_TOKEN: ${{ github.token }}
         run: bash dispatcher/scripts/post-review-feedback.sh
 
