@@ -8,6 +8,7 @@ DISPATCH="$ROOT/scripts/run-agent-dispatch-container.sh"
 REPAIR="$ROOT/scripts/run-review-repair-agent-container.sh"
 BROKER="$ROOT/scripts/provider-broker.mjs"
 PKG="$ROOT/docker/provider-broker-package.json"
+OPENCODE="$ROOT/scripts/agents/opencode.sh"
 
 for script in "$DISPATCH" "$REPAIR"; do
   name="$(basename "$script")"
@@ -35,6 +36,11 @@ t "broker validates per-job budget configuration" "yes" \
   "$(grep -q 'BROKER_JOB_MAX_USD invalid' "$BROKER" && echo yes || echo no)"
 t "broker requires task binding" "yes" \
   "$(grep -q 'BROKER_TASK_ID required' "$BROKER" && echo yes || echo no)"
+
+t "pinned OpenCode broker base uses /api/v1" "yes" \
+  "$(grep -q "baseURL = brokerBase + '/api/v1'" "$OPENCODE" && echo yes || echo no)"
+t "pinned OpenCode small model is bound to requested model" "yes" \
+  "$(grep -q 'base.small_model = requestedModel' "$OPENCODE" && echo yes || echo no)"
 
 health_block="$(awk '/function handleHealth/{capture=1} capture{print} /^}/{if(capture){exit}}' "$BROKER")"
 t "health endpoint is minimal" "yes" \
