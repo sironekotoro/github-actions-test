@@ -84,6 +84,7 @@ only under self-hosted isolation.
 | agent | profile | exact invocation | repository secret | runtime credential |
 |---|---|---|---|---|
 | `opencode` | `openrouter` | `opencode run --auto --agent build --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY` |
+| `opencode` | `openrouter-broker` | `opencode run --auto --agent build --print-logs -m "$model" "$prompt"` | `OPENROUTER_API_KEY` (capability token) | `OPENROUTER_API_KEY` (capability token) |
 | `codex` | `openai-api` | `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "$prompt"` | `OPENAI_API_KEY` | `CODEX_API_KEY` |
 | `claude-code` | `anthropic-api` | `claude -p "$prompt"` | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY` |
 
@@ -123,7 +124,88 @@ bytes of the selected provider credential. It does not follow symlinks and fails
 the same exact-literal policy and replace the selected credential with a fixed marker.
 This blocks raw credential persistence and publication; it is not complete containment,
 because the agent process still receives the key. A local authentication broker/relay
-that keeps provider credentials outside the agent process is the long-term fix.
+that keeps provider credentials outside the agent process is the long-term fix,
+implemented in Phase B1 via the provider broker.
+
+## Phase B1: Provider broker
+
+The provider broker (`scripts/provider-broker.mjs`) is an opt-in hardened proxy that
+keeps the actual OpenRouter API key outside the untrusted agent container. It is
+controlled by `PROVIDER_BROKER_ENABLED` (default `false`). When enabled:
+
+### Architecture
+
+```text
+Trusted outer executor
+  │
+  ├─ has OPENROUTER_MANAGEMENT_KEY (never passed to agent)
+  ├─ generates random opaque broker capability token
+  │
+  ├─ Broker container (provider-broker.Dockerfile)
+  │   ├─ receives management key + capability
+  │   ├─ provisions temporary OpenRouter key via Management API
+  │   ├─ listens on internal network port 3080
+  │   ├─ validates each agent request against policy
+  │   ├─ injects provisioned key upstream (never visible to agent)
+  │   ├─ outbound through restricted Squid proxy
+  │   └─ deletes temporary key on shutdown; expiry fallback
+  │
+  ├─ Agent container
+  │   ├─ receives only broker capability as OPENROUTER_API_KEY
+  │   ├─ receives OPENCODE_CONFIG_CONTENT pointing to broker baseURL
+  │   ├─ has NO HTTP_PROXY/HTTPS_PROXY (no direct egress route)
+  │   ├─ shares only internal network with broker
+  │   └─ cannot reach external APIs directly
+  │
+  └─ Squid egress proxy
+      ├─ broker-connected via separate network
+      ├─ permits only OpenRouter API domains
+      └─ agent has no route to this proxy
+```
+
+### Network topology
+
+When broker is disabled: agent has HTTP_PROXY through restricted Squid (existing Phase A behavior).
+When broker is enabled: agent has no proxy env vars; broker shares the agent's private
+internal network and has separate broker-egress network through restricted Squid.
+
+### Temporary key lifecycle
+
+1. Broker starts → POST /api/v1/keys with limit, no reset, bounded expiry
+2. Broker stores returned key and hash in memory only
+3. Broker generates opaque random capability → passed to agent as OPENROUTER_API_KEY
+4. Agent sends requests → broker validates capability, strips Authorization header,
+   injects provisioned key upstream
+5. Broker shutdown → DELETE /api/v1/keys/{hash} (expiry fallback on failure)
+6. Capability expiry → `BROKER_CAPABILITY_EXPIRY_MS` after broker start
+
+### Broker policy enforcement
+
+- capability binding: task id, provider=openrouter, exact allowed model
+- bounded expiry, per-job USD cap, bounded request count
+- max concurrency 1
+- fail closed for: wrong/missing/expired capability, wrong model,
+  unsupported path/method, malformed/oversized payload, request exhaustion,
+  concurrency violation
+- caller Authorization headers stripped; only broker-held key injected upstream
+- no management key, upstream key, capability, or prompt body logged
+
+### Compatibility
+
+When `PROVIDER_BROKER_ENABLED` is `false`, existing OpenCode behavior is preserved exactly.
+When `true` for OpenCode, any provisioning/configuration failure fails closed with
+`BROKER_PROVISION_FAILED`; never silently falls back to direct credential injection.
+
+Codex/OpenAI and Claude/Anthropic execution remain unchanged in Phase B1 core.
+Subscription profiles remain fail-closed. GitHub-hosted live coding remains disabled.
+
+### OpenCode configuration
+
+Pinned opencode-ai@1.18.16 receives `OPENCODE_CONFIG_CONTENT` at runtime with a
+provider baseURL pointing to the local broker. Inline config overrides project config.
+The broker capability occupies `OPENROUTER_API_KEY` inside the agent because pinned
+OpenCode expects that env name, but the value is only the broker capability, never
+an OpenRouter provider key.
 
 The helper enforces:
 
@@ -291,6 +373,10 @@ Important categories include:
 | `PUSH_FAILED` / `TARGET_PUSH_FAILED` | trusted push failed |
 | `PR_CREATE_FAILED` / `TARGET_PR_CREATE_FAILED` | trusted PR creation failed |
 | `REPAIR_*` | review-repair metadata/identity/branch/state/dispatch failures |
+| `BROKER_AUTH_FAILED` | broker capability validation failure |
+| `BROKER_PROVISION_FAILED` | broker temporary key provisioning failure |
+| `BROKER_CLEANUP_FAILED` | broker key cleanup failure (expiry fallback applies) |
+| `BROKER_UNAVAILABLE` | broker image or runtime unavailable |
 
 ## Operator controls
 

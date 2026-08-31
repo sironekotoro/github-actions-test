@@ -173,3 +173,14 @@ CI (`.github/workflows/ci.yml`) が push / PR で実行される。
 ## Cost and runner preflight
 
 Optional Phase A controls can defer paid inference below a protected budget floor and can detect an unavailable self-hosted runner before a live job is created. They are feature-gated for safe rollout; see [`docs/PHASE_A_BUDGET_RUNNER.md`](docs/PHASE_A_BUDGET_RUNNER.md).
+
+## Phase B1: Provider broker (opt-in)
+
+Phase B1 adds an optional provider broker that keeps the actual OpenRouter API key outside the untrusted agent container. When `PROVIDER_BROKER_ENABLED=true`:
+
+- A dedicated hardened broker container provisions a per-job temporary key via the OpenRouter Management API
+- The management key and temporary upstream key never reach the agent
+- The agent receives only an opaque broker capability token
+- The broker validates every request against policy (model, path, concurrency, budget)
+- Cleanup deletes the temporary key; expiry fallback on failure
+- See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for full details

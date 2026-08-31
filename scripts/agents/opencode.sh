@@ -29,6 +29,35 @@ agent_get_version() {
 agent_run() {
   local model="$1" prompt="$2" logfile="$3" max_runtime="$4"
   local credential_var="$5" credential_value="$6"
+
+  # When broker is enabled, configure OpenCode to point at the local broker
+  # using the OpenAI-compatible /api/v1 base expected by pinned
+  # opencode-ai@1.18.16. Bind small_model to the exact requested model too so
+  # title-generation traffic cannot escape the broker's exact-model policy.
+  # This trusted override wins over project config.
+  if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ -n "${OPENCODE_BROKER_BASE_URL:-}" ]; then
+    local broker_config
+    broker_config="$(node -e "
+      const existing = process.env.OPENCODE_CONFIG_CONTENT || '{}';
+      const requestedModel = process.argv[1];
+      try {
+        const base = JSON.parse(existing);
+        base.provider = base.provider || {};
+        base.provider.openrouter = base.provider.openrouter || {};
+        base.provider.openrouter.options = base.provider.openrouter.options || {};
+        const brokerBase = process.env.OPENCODE_BROKER_BASE_URL.replace(/\\/+$/, '');
+        base.provider.openrouter.options.baseURL = brokerBase + '/api/v1';
+        base.small_model = requestedModel;
+        process.stdout.write(JSON.stringify(base));
+      } catch(e) {
+        process.stderr.write('OPENCODE_CONFIG_CONTENT parse error: ' + e.message);
+        process.exit(1);
+      }
+    " "$model" 2>/dev/null)" || fail_with "$CAT_AGENT_START" "could not build broker config"
+    OPENCODE_CONFIG_CONTENT="$broker_config"
+    export OPENCODE_CONFIG_CONTENT
+  fi
+
   agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
     opencode run --auto --agent build --print-logs -m "$model" "$prompt"
 }

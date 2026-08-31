@@ -35,6 +35,17 @@ inputs:
     description: 'Coding agent: opencode (default), codex, or claude-code'
     required: false
     default: opencode
+  provider_broker_enabled:
+    description: 'Enable per-job provider broker authentication (default false)'
+    required: false
+    default: 'false'
+  provider_job_max_usd:
+    description: 'Per-job USD cap for provider broker (default 0.25)'
+    required: false
+    default: '0.25'
+  openrouter_management_key:
+    description: 'OpenRouter management key for broker provisioning; never passed to agent'
+    required: false
 runs:
   using: composite
   steps:
@@ -214,6 +225,9 @@ runs:
       run: |
         docker build --tag "agent-dispatch-agent:$GITHUB_RUN_ID" --file docker/review-repair-agent.Dockerfile .
         docker build --tag "agent-dispatch-egress:$GITHUB_RUN_ID" --file docker/review-repair-egress.Dockerfile .
+        if [ "${{ inputs.provider_broker_enabled }}" = "true" ]; then
+          docker build --tag "provider-broker:$GITHUB_RUN_ID" --file docker/provider-broker.Dockerfile .
+        fi
 
     - name: Run same-repo coding agent in isolated container
       id: agent_same_isolated
@@ -225,6 +239,9 @@ runs:
         AGENT_CREDENTIAL_VALUE: ${{ inputs.agent_credential || (steps.parse.outputs.agent == 'opencode' && inputs.openrouter_api_key || steps.parse.outputs.agent == 'codex' && inputs.openai_api_key || steps.parse.outputs.agent == 'claude-code' && inputs.anthropic_api_key || '') }}
         OPENROUTER_MODEL: ${{ steps.parse.outputs.requested_model || inputs.openrouter_model }}
         AGENT_MAX_RUNTIME: ${{ steps.parse.outputs.max_runtime || '10' }}
+        PROVIDER_BROKER_ENABLED: ${{ inputs.provider_broker_enabled }}
+        PROVIDER_JOB_MAX_USD: ${{ inputs.provider_job_max_usd }}
+        OPENROUTER_MANAGEMENT_KEY: ${{ inputs.openrouter_management_key }}
       run: bash ../scripts/run-agent-dispatch-container.sh
 
     - name: Run cross-repo coding agent in isolated container
@@ -237,6 +254,9 @@ runs:
         AGENT_CREDENTIAL_VALUE: ${{ inputs.agent_credential || (steps.parse.outputs.agent == 'opencode' && inputs.openrouter_api_key || steps.parse.outputs.agent == 'codex' && inputs.openai_api_key || steps.parse.outputs.agent == 'claude-code' && inputs.anthropic_api_key || '') }}
         OPENROUTER_MODEL: ${{ steps.parse.outputs.requested_model || inputs.openrouter_model }}
         AGENT_MAX_RUNTIME: ${{ steps.parse.outputs.max_runtime || '10' }}
+        PROVIDER_BROKER_ENABLED: ${{ inputs.provider_broker_enabled }}
+        PROVIDER_JOB_MAX_USD: ${{ inputs.provider_job_max_usd }}
+        OPENROUTER_MANAGEMENT_KEY: ${{ inputs.openrouter_management_key }}
       run: bash ../scripts/run-agent-dispatch-container.sh
 
     - name: Validate same-repo publication policy
@@ -328,3 +348,4 @@ runs:
       run: |
         docker image rm -f "agent-dispatch-agent:$GITHUB_RUN_ID" >/dev/null 2>&1 || true
         docker image rm -f "agent-dispatch-egress:$GITHUB_RUN_ID" >/dev/null 2>&1 || true
+        docker image rm -f "provider-broker:$GITHUB_RUN_ID" >/dev/null 2>&1 || true
