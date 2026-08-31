@@ -1,6 +1,6 @@
 {
   "private": true,
   "dependencies": {
-    "undici": "7.10.0"
+    "undici": "7.29.0"
   }
 }
