@@ -36,7 +36,7 @@ t "review repair withholds direct key in broker mode" "yes" \
   "$(grep -Fq "OPENROUTER_API_KEY: \${{ vars.PROVIDER_BROKER_ENABLED != 'true' && secrets.OPENROUTER_API_KEY || '' }}" "$REPAIR" && echo yes || echo no)"
 t "review repair passes management key only in broker mode" "yes" \
   "$(grep -Fq "OPENROUTER_MANAGEMENT_KEY: \${{ vars.PROVIDER_BROKER_ENABLED == 'true' && secrets.OPENROUTER_MANAGEMENT_KEY || '' }}" "$REPAIR" && echo yes || echo no)"
-t "review repair no longer unconditionally injects direct OpenRouter key" "no" \
-  "$(grep -F "OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}" "$REPAIR" 2>/dev/null || true)"
+t "review repair no longer unconditionally injects direct OpenRouter key" "yes" \
+  "$(! grep -Fq "OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}" "$REPAIR" && echo yes || echo no)"
 
 finish
