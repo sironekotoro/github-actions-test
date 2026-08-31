@@ -60,21 +60,28 @@ cleanup_networks() {
 }
 trap cleanup_networks EXIT
 
-# Start broker container when broker is enabled
+# Start broker container when broker is enabled.
 openroute_model="${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
 opencode_broker_base_url=""
 broker_capability=""
 if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ -n "${OPENROUTER_MANAGEMENT_KEY:-}" ]; then
+  broker_task_id="$(jq -r '.task_id // empty' "$task_file")"
+  [ -n "$broker_task_id" ] || fail_with "$CAT_BROKER_UNAVAILABLE" "validated repair task id is missing for broker"
+  agent_runtime_minutes="${AGENT_MAX_RUNTIME:-45}"
+  case "$agent_runtime_minutes" in
+    ''|*[!0-9]*) fail_with "$CAT_BROKER_UNAVAILABLE" "AGENT_MAX_RUNTIME must be a positive integer" ;;
+  esac
+  [ "$agent_runtime_minutes" -gt 0 ] || fail_with "$CAT_BROKER_UNAVAILABLE" "AGENT_MAX_RUNTIME must be a positive integer"
+  broker_capability_expiry_ms="$(((agent_runtime_minutes + 5) * 60 * 1000))"
+
   generate_broker_capability broker_capability
 
   setup_broker_network_topology "$private_network" "$egress_network" "$broker_egress_network" \
     "$proxy_name" "$egress_image" "$run_key"
 
-  # Export capability values to env so docker -e NAME (name-only) picks them up
   export BROKER_CAPABILITY="$broker_capability"
   export OPENROUTER_API_KEY="$broker_capability"
 
-  # Start broker on private_network (agent comms) and connect to broker_egress_network (restricted egress)
   docker run --detach --name "$broker_name" \
     --network "$private_network" \
     --read-only \
@@ -86,15 +93,16 @@ if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ -n "${OPENROUTER_MANAGE
     -e BROKER_PORT=3080 \
     -e OPENROUTER_MANAGEMENT_KEY \
     -e BROKER_CAPABILITY \
-    -e BROKER_TASK_ID="${GITHUB_RUN_ID:-unknown}" \
+    -e BROKER_TASK_ID="$broker_task_id" \
     -e BROKER_ALLOWED_MODEL="$openroute_model" \
     -e BROKER_JOB_MAX_USD="${PROVIDER_JOB_MAX_USD:-0.25}" \
     -e BROKER_MAX_REQUESTS="${BROKER_MAX_REQUESTS:-500}" \
-    -e BROKER_CAPABILITY_EXPIRY_MS="${BROKER_CAPABILITY_EXPIRY_MS:-3600000}" \
+    -e BROKER_CAPABILITY_EXPIRY_MS="$broker_capability_expiry_ms" \
     -e BROKER_PROXY_URL="http://${PROXY_BROKER_IP}:3128" \
     -e NO_PROXY=localhost,127.0.0.1 \
     "$broker_image" >/dev/null \
     || { cleanup_networks; fail_with "$CAT_BROKER_UNAVAILABLE" "could not start broker container"; }
+  broker_started=true
 
   docker network connect "$broker_egress_network" "$broker_name" \
     || { cleanup_networks; fail_with "$CAT_BROKER_UNAVAILABLE" "could not connect broker to egress network"; }
@@ -103,7 +111,6 @@ if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ -n "${OPENROUTER_MANAGE
     | jq -r --arg network "$private_network" '.[0].NetworkSettings.Networks[$network].IPAddress // empty')"
   [ -n "$broker_ip" ] || { cleanup_networks; fail_with "$CAT_BROKER_UNAVAILABLE" "could not determine broker address"; }
 
-  # Wait for broker health
   i=0
   while [ "$i" -lt 30 ]; do
     if docker run --rm --network "$private_network" "$agent_image" \
@@ -118,7 +125,6 @@ if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ -n "${OPENROUTER_MANAGE
   done
   [ "$i" -lt 30 ] || { cleanup_networks; fail_with "$CAT_BROKER_UNAVAILABLE" "broker health check timed out"; }
 
-  broker_started=true
   opencode_broker_base_url="http://$broker_ip:3080"
 else
   docker network create --internal "$private_network" >/dev/null \
