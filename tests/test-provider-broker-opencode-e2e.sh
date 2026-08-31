@@ -35,6 +35,10 @@ t "contract harness uses production broker baseURL form" "yes" \
   "$(grep -q 'OPENCODE_BROKER_BASE_URL=http://broker:3080' "$SCRIPT" && echo yes || echo no)"
 t "contract harness runtime networks are internal-only" "yes" \
   "$(count="$(grep -c 'docker network create --internal' "$SCRIPT")"; [ "$count" -eq 2 ] && echo yes || echo no)"
+t "contract harness starts broker where management mock is reachable" "yes" \
+  "$(grep -A4 'docker run -d' "$SCRIPT" | grep -q -- '--network "$mock_net"' && echo yes || echo no)"
+t "contract harness attaches broker alias to agent network" "yes" \
+  "$(grep -q 'docker network connect --alias broker "$agent_net" "$broker_name"' "$SCRIPT" && echo yes || echo no)"
 t "contract harness has no OpenRouter external endpoint" "yes" \
   "$(grep -q 'openrouter.ai' "$SCRIPT" && echo no || echo yes)"
 t "contract harness checks temporary key cleanup" "yes" \
