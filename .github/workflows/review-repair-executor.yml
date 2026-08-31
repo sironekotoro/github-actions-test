@@ -247,6 +247,9 @@ jobs:
         run: |
           docker build --tag "review-repair-agent:$GITHUB_RUN_ID" --file docker/review-repair-agent.Dockerfile .
           docker build --tag "review-repair-egress:$GITHUB_RUN_ID" --file docker/review-repair-egress.Dockerfile .
+          if [ "${{ vars.PROVIDER_BROKER_ENABLED || 'false' }}" = "true" ]; then
+            docker build --tag "provider-broker:$GITHUB_RUN_ID" --file docker/provider-broker.Dockerfile .
+          fi
 
       - name: Run repair agent in isolated container
         id: agent
@@ -254,8 +257,11 @@ jobs:
         working-directory: target
         env:
           TASK_FILE: ${{ runner.temp }}/task.json
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_API_KEY: ${{ vars.PROVIDER_BROKER_ENABLED != 'true' && secrets.OPENROUTER_API_KEY || '' }}
+          OPENROUTER_MANAGEMENT_KEY: ${{ vars.PROVIDER_BROKER_ENABLED == 'true' && secrets.OPENROUTER_MANAGEMENT_KEY || '' }}
           OPENROUTER_MODEL: ${{ vars.REVIEW_REPAIR_MODEL || 'openrouter/deepseek/deepseek-v4-flash' }}
+          PROVIDER_BROKER_ENABLED: ${{ vars.PROVIDER_BROKER_ENABLED || 'false' }}
+          PROVIDER_JOB_MAX_USD: ${{ vars.PROVIDER_JOB_MAX_USD || '0.25' }}
           AGENT_MAX_RUNTIME: '45'
         run: bash ../dispatcher/scripts/run-review-repair-agent-container.sh
 
