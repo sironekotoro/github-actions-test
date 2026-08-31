@@ -374,9 +374,12 @@ jobs:
           cross_repo_enabled: ${{ vars.CROSS_REPO_ENABLED || 'false' }}
           app_id: ${{ secrets.GH_APP_ID }}
           app_private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          agent_credential: ${{ needs.route.outputs.agent == 'opencode' && secrets.OPENROUTER_API_KEY || needs.route.outputs.agent == 'codex' && secrets.OPENAI_API_KEY || needs.route.outputs.agent == 'claude-code' && secrets.ANTHROPIC_API_KEY || '' }}
+          agent_credential: ${{ needs.route.outputs.agent == 'opencode' && vars.PROVIDER_BROKER_ENABLED != 'true' && secrets.OPENROUTER_API_KEY || needs.route.outputs.agent == 'codex' && secrets.OPENAI_API_KEY || needs.route.outputs.agent == 'claude-code' && secrets.ANTHROPIC_API_KEY || '' }}
           openrouter_model: ${{ inputs.model || 'openrouter/deepseek/deepseek-v4-flash' }}
           agent: ${{ needs.route.outputs.agent || 'opencode' }}
+          provider_broker_enabled: ${{ needs.route.outputs.agent == 'opencode' && vars.PROVIDER_BROKER_ENABLED == 'true' && 'true' || 'false' }}
+          provider_job_max_usd: ${{ vars.PROVIDER_JOB_MAX_USD || '0.25' }}
+          openrouter_management_key: ${{ needs.route.outputs.agent == 'opencode' && vars.PROVIDER_BROKER_ENABLED == 'true' && secrets.OPENROUTER_MANAGEMENT_KEY || '' }}
 
       - name: Resolve Agent Dispatch notification failure category
         id: notification_failure
