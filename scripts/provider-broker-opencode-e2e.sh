@@ -194,10 +194,12 @@ wait_for_log "$mock_name" MOCK_READY
 
 export BROKER_CAPABILITY="opencode-e2e-capability-${safe_key}"
 export OPENROUTER_MANAGEMENT_KEY="opencode-e2e-management-${safe_key}"
+# Start the broker on the mock-side internal network so provisioning can reach
+# the local Management API immediately. Only after startup do we attach the
+# separate agent-side network with the broker alias used by OpenCode.
 docker run -d \
   --name "$broker_name" \
-  --network "$agent_net" \
-  --network-alias broker \
+  --network "$mock_net" \
   --read-only \
   --cap-drop=ALL \
   --security-opt=no-new-privileges \
@@ -216,7 +218,7 @@ docker run -d \
   -e OPENROUTER_PROVIDER_API_URL=http://mock:8080 \
   "$broker_image" >/dev/null
 
-docker network connect "$mock_net" "$broker_name"
+docker network connect --alias broker "$agent_net" "$broker_name"
 wait_for_log "$broker_name" 'temporary key provisioned'
 
 # Run the real candidate adapter through run-agent.sh, not a handcrafted HTTP
