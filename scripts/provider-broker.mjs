@@ -1,20 +1,19 @@
 #!/usr/bin/env node
-import crypto from 'node:crypto';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
-const PORT = parseInt(process.env.BROKER_PORT || '3080', 10);
+const PORT = Number.parseInt(process.env.BROKER_PORT || '3080', 10);
 const MANAGEMENT_KEY = process.env.OPENROUTER_MANAGEMENT_KEY || '';
 const MANAGEMENT_API_URL = process.env.OPENROUTER_MANAGEMENT_API_URL || 'https://openrouter.ai/api/v1/keys';
 const PROVIDER_API_BASE_URL = process.env.OPENROUTER_PROVIDER_API_URL || 'https://openrouter.ai';
 const CAPABILITY = process.env.BROKER_CAPABILITY || '';
 const CAPABILITY_TASK_ID = process.env.BROKER_TASK_ID || '';
 const CAPABILITY_MODEL = process.env.BROKER_ALLOWED_MODEL || '';
-const CAPABILITY_EXPIRY_MS = parseInt(process.env.BROKER_CAPABILITY_EXPIRY_MS || '3600000', 10);
-const CAPABILITY_MAX_REQUESTS = parseInt(process.env.BROKER_MAX_REQUESTS || '500', 10);
-const CAPABILITY_JOB_MAX_USD = parseFloat(process.env.BROKER_JOB_MAX_USD || '0.25');
+const CAPABILITY_EXPIRY_MS = Number.parseInt(process.env.BROKER_CAPABILITY_EXPIRY_MS || '', 10);
+const CAPABILITY_MAX_REQUESTS = Number.parseInt(process.env.BROKER_MAX_REQUESTS || '500', 10);
+const CAPABILITY_JOB_MAX_USD = Number.parseFloat(process.env.BROKER_JOB_MAX_USD || '0.25');
 const PROXY_URL = process.env.BROKER_PROXY_URL || '';
 
 let ProxyAgent = null;
@@ -29,10 +28,9 @@ if (PROXY_URL) {
 
 let provisionedKey = null;
 let provisionedKeyHash = null;
-let provisionedKeyExpiresAt = null;
 let requestCount = 0;
 let concurrentCount = 0;
-const capabilityExpiresAt = Date.now() + CAPABILITY_EXPIRY_MS;
+let capabilityExpiresAt = 0;
 let cleanedUp = false;
 
 function log(level, msg) {
@@ -44,6 +42,23 @@ function failJson(res, status, code, detail) {
   const body = JSON.stringify({ error: { code, message: detail } });
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
   res.end(body);
+}
+
+function validPositiveInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function validateConfiguration() {
+  if (!MANAGEMENT_KEY) throw new Error('OPENROUTER_MANAGEMENT_KEY required');
+  if (!CAPABILITY) throw new Error('BROKER_CAPABILITY required');
+  if (!CAPABILITY_TASK_ID) throw new Error('BROKER_TASK_ID required');
+  if (!CAPABILITY_MODEL) throw new Error('BROKER_ALLOWED_MODEL required');
+  if (!validPositiveInteger(PORT) || PORT > 65535) throw new Error('BROKER_PORT invalid');
+  if (!validPositiveInteger(CAPABILITY_EXPIRY_MS)) throw new Error('BROKER_CAPABILITY_EXPIRY_MS invalid');
+  if (!validPositiveInteger(CAPABILITY_MAX_REQUESTS)) throw new Error('BROKER_MAX_REQUESTS invalid');
+  if (!Number.isFinite(CAPABILITY_JOB_MAX_USD) || CAPABILITY_JOB_MAX_USD <= 0) {
+    throw new Error('BROKER_JOB_MAX_USD invalid');
+  }
 }
 
 async function managementFetch(method, path, body) {
@@ -63,7 +78,8 @@ async function managementFetch(method, path, body) {
 async function provisionTemporaryKey() {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + CAPABILITY_EXPIRY_MS + 300000);
-  const safeName = `broker-${(CAPABILITY_TASK_ID || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '')}-${now.getTime()}`.substring(0, 64);
+  const safeTaskId = CAPABILITY_TASK_ID.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 36) || 'task';
+  const safeName = `broker-${safeTaskId}-${now.getTime()}`.substring(0, 64);
   const payload = {
     name: safeName,
     limit: CAPABILITY_JOB_MAX_USD,
@@ -71,12 +87,11 @@ async function provisionTemporaryKey() {
     expires_at: expiresAt.toISOString(),
   };
   const { status, body } = await managementFetch('POST', '', payload);
-  if (status !== 201 || !body?.key) {
+  if (status !== 201 || !body?.key || !body?.data?.hash) {
     throw new Error(`provisioning failed: HTTP ${status}`);
   }
   provisionedKey = body.key;
-  provisionedKeyHash = body?.data?.hash || null;
-  provisionedKeyExpiresAt = expiresAt;
+  provisionedKeyHash = body.data.hash;
   log('info', 'temporary key provisioned');
 }
 
@@ -90,7 +105,7 @@ async function deleteTemporaryKey() {
       return;
     }
     log('warn', 'delete failed; expiry fallback');
-  } catch (err) {
+  } catch {
     log('warn', 'delete failed; expiry fallback');
   }
 }
@@ -130,9 +145,7 @@ function buildUpstreamHeaders(reqHeaders) {
   for (const [k, v] of Object.entries(reqHeaders)) {
     const lk = k.toLowerCase();
     if (blocked.has(lk)) continue;
-    if (allowlist.has(lk)) {
-      result[k] = v;
-    }
+    if (allowlist.has(lk)) result[k] = v;
   }
   return result;
 }
@@ -142,7 +155,7 @@ async function handleProxy(req, res) {
     failJson(res, 503, 'BROKER_CLOSED', 'broker has shut down');
     return;
   }
-  const bearer = parseBearer(req.headers['authorization']);
+  const bearer = parseBearer(req.headers.authorization);
   if (!bearer || bearer !== CAPABILITY) {
     failJson(res, 401, 'BROKER_AUTH_INVALID', 'invalid or missing capability');
     return;
@@ -206,8 +219,8 @@ async function handleProxy(req, res) {
   concurrentCount++;
 
   const upstreamHeaders = buildUpstreamHeaders(req.headers);
-  upstreamHeaders['Authorization'] = `Bearer ${provisionedKey}`;
-  if (!upstreamHeaders['Content-Type']) {
+  upstreamHeaders.Authorization = `Bearer ${provisionedKey}`;
+  if (!upstreamHeaders['Content-Type'] && !upstreamHeaders['content-type']) {
     upstreamHeaders['Content-Type'] = 'application/json';
   }
 
@@ -217,9 +230,7 @@ async function handleProxy(req, res) {
   try {
     const fetchOpts = { method: req.method, headers: upstreamHeaders };
     if (body) fetchOpts.body = body;
-    if (ProxyAgent) {
-      fetchOpts.dispatcher = new ProxyAgent(PROXY_URL);
-    }
+    if (ProxyAgent) fetchOpts.dispatcher = new ProxyAgent(PROXY_URL);
 
     const upstreamRes = await fetch(upstreamUrl, fetchOpts);
 
@@ -227,9 +238,7 @@ async function handleProxy(req, res) {
       const headers = { 'Content-Type': upstreamRes.headers.get('content-type') || 'application/json' };
       if (upstreamRes.headers.get('transfer-encoding')) headers['Transfer-Encoding'] = 'chunked';
       res.writeHead(upstreamRes.status, headers);
-      for await (const chunk of upstreamRes.body) {
-        res.write(chunk);
-      }
+      for await (const chunk of upstreamRes.body) res.write(chunk);
       res.end();
     } else {
       const data = await upstreamRes.json();
@@ -244,13 +253,8 @@ async function handleProxy(req, res) {
   }
 }
 
-function handleHealth(req, res) {
-  const info = JSON.stringify({
-    status: 'ok',
-    provisioned: !!provisionedKey,
-    requestCount,
-    concurrentCount,
-  });
+function handleHealth(_req, res) {
+  const info = JSON.stringify({ status: 'ok' });
   res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(info) });
   res.end(info);
 }
@@ -265,10 +269,8 @@ const server = http.createServer((req, res) => {
 });
 
 async function start() {
-  if (!MANAGEMENT_KEY) { log('error', 'OPENROUTER_MANAGEMENT_KEY required'); process.exit(1); }
-  if (!CAPABILITY) { log('error', 'BROKER_CAPABILITY required'); process.exit(1); }
-  if (!CAPABILITY_MODEL) { log('error', 'BROKER_ALLOWED_MODEL required'); process.exit(1); }
-
+  validateConfiguration();
+  capabilityExpiresAt = Date.now() + CAPABILITY_EXPIRY_MS;
   await provisionTemporaryKey();
 
   server.listen(PORT, '0.0.0.0', () => {
@@ -276,9 +278,7 @@ async function start() {
   });
 
   const cleanupTimer = setInterval(() => {
-    if (Date.now() > capabilityExpiresAt && !cleanedUp) {
-      deleteTemporaryKey().catch(() => {});
-    }
+    if (Date.now() > capabilityExpiresAt && !cleanedUp) deleteTemporaryKey().catch(() => {});
   }, 60000);
 
   const shutdown = async () => {
