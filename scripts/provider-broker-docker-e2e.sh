@@ -305,7 +305,7 @@ else
   exit 1
 fi
 
-docker exec "$agent_name" node - <<'EOF'
+docker exec -i "$agent_name" node - <<'EOF'
 const body = {
   model: 'openrouter/deepseek/deepseek-v4-flash',
   messages: [{role: 'user', content: 'local docker e2e'}]
