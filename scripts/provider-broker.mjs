@@ -117,10 +117,7 @@ function parseBearer(auth) {
 }
 
 function isAllowedPathAndMethod(method, path) {
-  if (!path) return false;
-  if (method === 'POST' && path === '/api/v1/chat/completions') return true;
-  if (method === 'GET' && (path === '/api/v1/models' || path.match(/^\/api\/v1\/models\/(.+)$/))) return true;
-  return false;
+  return method === 'POST' && path === '/api/v1/chat/completions';
 }
 
 function normalizeModel(model) {
