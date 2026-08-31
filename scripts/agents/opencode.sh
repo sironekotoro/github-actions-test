@@ -31,25 +31,29 @@ agent_run() {
   local credential_var="$5" credential_value="$6"
 
   # When broker is enabled, configure OpenCode to point at the local broker
-  # for its OpenRouter provider base URL. Build a single trusted JSON document
-  # using the provider.openrouter.options.baseURL structure accepted by
-  # pinned opencode-ai@1.18.16. This trusted override wins over project config.
+  # using the OpenAI-compatible /api/v1 base expected by pinned
+  # opencode-ai@1.18.16. Bind small_model to the exact requested model too so
+  # title-generation traffic cannot escape the broker's exact-model policy.
+  # This trusted override wins over project config.
   if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ -n "${OPENCODE_BROKER_BASE_URL:-}" ]; then
     local broker_config
     broker_config="$(node -e "
       const existing = process.env.OPENCODE_CONFIG_CONTENT || '{}';
+      const requestedModel = process.argv[1];
       try {
         const base = JSON.parse(existing);
         base.provider = base.provider || {};
         base.provider.openrouter = base.provider.openrouter || {};
         base.provider.openrouter.options = base.provider.openrouter.options || {};
-        base.provider.openrouter.options.baseURL = process.env.OPENCODE_BROKER_BASE_URL;
+        const brokerBase = process.env.OPENCODE_BROKER_BASE_URL.replace(/\\/+$/, '');
+        base.provider.openrouter.options.baseURL = brokerBase + '/api/v1';
+        base.small_model = requestedModel;
         process.stdout.write(JSON.stringify(base));
       } catch(e) {
         process.stderr.write('OPENCODE_CONFIG_CONTENT parse error: ' + e.message);
         process.exit(1);
       }
-    " 2>/dev/null)" || fail_with "$CAT_AGENT_START" "could not build broker config"
+    " "$model" 2>/dev/null)" || fail_with "$CAT_AGENT_START" "could not build broker config"
     OPENCODE_CONFIG_CONTENT="$broker_config"
     export OPENCODE_CONFIG_CONTENT
   fi
