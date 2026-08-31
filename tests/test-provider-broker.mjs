@@ -155,6 +155,13 @@ function parseResponse(resp) {
   try { return JSON.parse(resp.body); } catch { return {}; }
 }
 
+function allowedChatBody() {
+  return {
+    model: 'openrouter/deepseek/deepseek-v4-flash',
+    messages: [{ role: 'user', content: 'hi' }],
+  };
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================
@@ -189,11 +196,11 @@ async function run() {
     section('Capability authentication');
     mock = await startMockServer(MOCK_BASE);
     broker = await startBroker(MOCK_BASE, MOCK_BASE + 1);
-    let resp = await httpRequest('GET', MOCK_BASE + 1, '/api/v1/models', 'test-capability-token-abc123');
+    let resp = await httpRequest('POST', MOCK_BASE + 1, '/api/v1/chat/completions', 'test-capability-token-abc123', allowedChatBody());
     t('valid capability auth succeeds', 200, resp.status);
-    resp = await httpRequest('GET', MOCK_BASE + 1, '/api/v1/models', '');
+    resp = await httpRequest('POST', MOCK_BASE + 1, '/api/v1/chat/completions', '', allowedChatBody());
     t('missing capability fails closed', 401, resp.status);
-    resp = await httpRequest('GET', MOCK_BASE + 1, '/api/v1/models', 'wrong-token');
+    resp = await httpRequest('POST', MOCK_BASE + 1, '/api/v1/chat/completions', 'wrong-token', allowedChatBody());
     t('wrong capability fails closed', 401, resp.status);
     broker.kill(); await new Promise(r => setTimeout(r, 100));
 
@@ -203,7 +210,7 @@ async function run() {
     mock = await startMockServer(MOCK_BASE + 10);
     broker = await startBroker(MOCK_BASE + 10, MOCK_BASE + 11, { BROKER_CAPABILITY_EXPIRY_MS: '1' });
     await new Promise(r => setTimeout(r, 800));
-    resp = await httpRequest('GET', MOCK_BASE + 11, '/api/v1/models', 'test-capability-token-abc123');
+    resp = await httpRequest('POST', MOCK_BASE + 11, '/api/v1/chat/completions', 'test-capability-token-abc123', allowedChatBody());
     t('expired capability fails closed', 401, resp.status);
     broker.kill(); await new Promise(r => setTimeout(r, 100));
 
@@ -236,10 +243,10 @@ async function run() {
     mock = await startMockServer(MOCK_BASE + 30);
     broker = await startBroker(MOCK_BASE + 30, MOCK_BASE + 31);
     resp = await httpRequest('GET', MOCK_BASE + 31, '/api/v1/models', 'test-capability-token-abc123');
-    t('GET /api/v1/models allowed', 200, resp.status);
-    resp = await httpRequest('POST', MOCK_BASE + 31, '/api/v1/chat/completions', 'test-capability-token-abc123', {
-      model: 'openrouter/deepseek/deepseek-v4-flash', messages: [{ role: 'user', content: 'hi' }]
-    });
+    t('GET /api/v1/models denied', 403, resp.status);
+    resp = await httpRequest('GET', MOCK_BASE + 31, '/api/v1/models/deepseek', 'test-capability-token-abc123');
+    t('GET /api/v1/models/:id denied', 403, resp.status);
+    resp = await httpRequest('POST', MOCK_BASE + 31, '/api/v1/chat/completions', 'test-capability-token-abc123', allowedChatBody());
     t('POST /api/v1/chat/completions allowed', 200, resp.status);
     resp = await httpRequest('POST', MOCK_BASE + 31, '/api/v1/completions', 'test-capability-token-abc123', {
       model: 'openrouter/deepseek/deepseek-v4-flash', prompt: 'hello'
@@ -260,11 +267,11 @@ async function run() {
     mock.kill(); await new Promise(r => setTimeout(r, 200));
     mock = await startMockServer(MOCK_BASE + 40);
     broker = await startBroker(MOCK_BASE + 40, MOCK_BASE + 41, { BROKER_MAX_REQUESTS: '2' });
-    resp = await httpRequest('GET', MOCK_BASE + 41, '/api/v1/models', 'test-capability-token-abc123');
+    resp = await httpRequest('POST', MOCK_BASE + 41, '/api/v1/chat/completions', 'test-capability-token-abc123', allowedChatBody());
     t('request 1 within limit', 200, resp.status);
-    resp = await httpRequest('GET', MOCK_BASE + 41, '/api/v1/models', 'test-capability-token-abc123');
+    resp = await httpRequest('POST', MOCK_BASE + 41, '/api/v1/chat/completions', 'test-capability-token-abc123', allowedChatBody());
     t('request 2 within limit', 200, resp.status);
-    resp = await httpRequest('GET', MOCK_BASE + 41, '/api/v1/models', 'test-capability-token-abc123');
+    resp = await httpRequest('POST', MOCK_BASE + 41, '/api/v1/chat/completions', 'test-capability-token-abc123', allowedChatBody());
     t('request 3 beyond limit fails', 429, resp.status);
     broker.kill(); await new Promise(r => setTimeout(r, 100));
 
@@ -293,7 +300,7 @@ async function run() {
       BROKER_JOB_MAX_USD: '0.50',
       BROKER_CAPABILITY_EXPIRY_MS: '600000',
     });
-    resp = await httpRequest('GET', MOCK_BASE + 61, '/api/v1/models', 'test-capability-token-abc123');
+    resp = await httpRequest('POST', MOCK_BASE + 61, '/api/v1/chat/completions', 'test-capability-token-abc123', allowedChatBody());
     t('provisioned key works with custom params', 200, resp.status);
     const stderr = broker.stderrData();
     t('broker logs provisioned (no hash)', 'present', stderr.includes('temporary key provisioned') ? 'present' : 'absent');
@@ -554,6 +561,8 @@ async function run() {
     brokerScriptContent.includes('normalizeModel') ? 'yes' : 'no');
   t('broker checks status===201 for create', 'yes',
     brokerScriptContent.includes('status !== 201') ? 'yes' : 'no');
+  t('broker provider surface excludes models endpoints', 'yes',
+    brokerScriptContent.includes("path === '/api/v1/models'") || brokerScriptContent.includes('/api/v1/models/') ? 'no' : 'yes');
   t('broker graceful shutdown on SIGTERM', 'yes',
     brokerScriptContent.includes('SIGTERM') ? 'yes' : 'no');
   t('broker graceful shutdown on SIGINT', 'yes',
