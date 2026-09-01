@@ -10,7 +10,7 @@ t "workflow is issue-opened only" "yes" "$(grep -Fq 'types: [opened]' "$WORKFLOW
 t "workflow restricts actor and issue author" "yes" "$(grep -Fq "github.actor == 'sironekotoro'" "$WORKFLOW" && grep -Fq "github.event.issue.user.login == 'sironekotoro'" "$WORKFLOW" && echo yes || echo no)"
 t "workflow requires exact Claude broker E2E title" "yes" "$(grep -Fq "github.event.issue.title == 'Claude Broker E2E'" "$WORKFLOW" && echo yes || echo no)"
 t "workflow fixes candidate by same-repo PR head SHA" "yes" "$(grep -Fq "candidate_sha=\"\$(jq -r '.head.sha'" "$WORKFLOW" && grep -Fq ".head.repo.full_name" "$WORKFLOW" && echo yes || echo no)"
-t "workflow restricts candidate changed-file surface" "yes" "$(grep -Fq 'scripts/provider-broker-anthropic\\.mjs' "$WORKFLOW" && grep -Fq 'disallowed candidate file' "$WORKFLOW" && echo yes || echo no)"
+t "workflow restricts candidate changed-file surface" "yes" "$(grep -Fq 'scripts/provider-broker-anthropic\.mjs' "$WORKFLOW" && grep -Fq 'disallowed candidate file' "$WORKFLOW" && echo yes || echo no)"
 t "workflow runs dedicated self-hosted acceptance" "yes" "$(grep -Fq 'runs-on: [self-hosted, review-repair, macOS, ARM64]' "$WORKFLOW" && echo yes || echo no)"
 t "workflow references no repository secrets" "yes" "$(grep -Eq 'secrets\.|ANTHROPIC_API_KEY:' "$WORKFLOW" && echo no || echo yes)"
 t "candidate Dockerfile must equal trusted master" "yes" "$(grep -Fq 'cmp -s trusted/docker/review-repair-agent.Dockerfile candidate/docker/review-repair-agent.Dockerfile' "$WORKFLOW" && echo yes || echo no)"
