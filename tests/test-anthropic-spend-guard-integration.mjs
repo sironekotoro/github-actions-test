@@ -7,6 +7,8 @@ import {
   usdToMicroUsd,
 } from '../scripts/lib/anthropic-spend-guard.mjs';
 
+// Entirely local contract test: admission must finish before a cost-bearing
+// Messages request shape can be emitted.
 let passed = 0;
 let failed = 0;
 function t(desc, expected, actual) {
@@ -85,6 +87,7 @@ try {
   const countResult = JSON.parse(response.body);
   t('token-count estimate is received', 12000, countResult.input_tokens);
   t('one count request is made before inference', 1, state.countRequests.length);
+  t('no Messages request exists before budget admission', 0, state.messageRequests.length);
   t('count request omits raw max_tokens', false, Object.hasOwn(state.countRequests[0].json, 'max_tokens'));
   t('count request preserves context management', true, Object.hasOwn(state.countRequests[0].json, 'context_management'));
   t('count request preserves client tool schemas', 1, state.countRequests[0].json.tools.length);
@@ -102,10 +105,20 @@ try {
 
   response = await post(PORT, '/v1/messages?beta=true', reservation.rewrittenBody);
   t('rewritten Messages mock succeeds', 200, response.status);
-  t('exactly one paid-shape message would follow successful count', 1, state.messageRequests.length);
+  t('exactly one paid-shape message follows successful admission', 1, state.messageRequests.length);
   t('provider sees exact trusted model', SUPPORTED_MODEL, state.messageRequests[0].json.model);
   t('provider sees rewritten bounded max_tokens', 4096, state.messageRequests[0].json.max_tokens);
   t('provider sees stream=true', true, state.messageRequests[0].json.stream);
+
+  const beforeDenied = state.messageRequests.length;
+  const denied = reserveAnthropicRequest({
+    body: requestBody,
+    estimatedInputTokens: 1000000,
+    remainingMicroUsd: usdToMicroUsd('0.01'),
+  });
+  t('unaffordable count is denied before Messages', false, denied.allowed);
+  t('denied admission has explicit budget reason', 'ANTHROPIC_JOB_BUDGET_EXHAUSTED', denied.reason);
+  t('denied admission emits no additional Messages request', beforeDenied, state.messageRequests.length);
 
   // First version never credits unused reservation back. A second admission
   // starts from the monotonically lower remaining value.
