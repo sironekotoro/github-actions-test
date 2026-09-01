@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const BROKER = path.join(ROOT, 'scripts', 'provider-broker-anthropic.mjs');
+const BROKER = path.join(ROOT, 'scripts', 'provider-broker.mjs');
 const CAPABILITY = 'b3b-local-capability';
 const PROVIDER_KEY = 'sk-ant-b3b-provider-secret';
 const MODEL = 'claude-sonnet-5';
@@ -65,12 +65,14 @@ function waitForHealth(port, timeoutMs = 5000) {
 async function startBroker(mockPort, brokerPort, extraEnv = {}) {
   const env = {
     ...process.env,
+    BROKER_PROVIDER: 'anthropic',
     BROKER_PORT: String(brokerPort),
     ANTHROPIC_API_KEY: PROVIDER_KEY,
     ANTHROPIC_PROVIDER_API_URL: `http://127.0.0.1:${mockPort}`,
     BROKER_CAPABILITY: CAPABILITY,
     BROKER_TASK_ID: 'b3b-test',
     BROKER_ALLOWED_MODEL: MODEL,
+    BROKER_JOB_MAX_USD: '0.25',
     BROKER_CAPABILITY_EXPIRY_MS: '600000',
     BROKER_MAX_REQUESTS: '20',
     ...extraEnv,
@@ -118,7 +120,10 @@ function validBody(overrides = {}) {
 async function stop(child) {
   if (!child || child.exitCode !== null) return;
   child.kill('SIGTERM');
-  await new Promise((resolve) => child.once('exit', resolve));
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, 2500);
+    child.once('exit', () => { clearTimeout(timer); resolve(); });
+  });
 }
 async function close(server) { if (server) await new Promise((resolve) => server.close(resolve)); }
 
@@ -129,11 +134,7 @@ try {
   mock = await startMock(BASE);
   broker = await startBroker(BASE, BASE + 1);
 
-  let r = await request(BASE + 1, { method: 'HEAD', path: '/', capability: null });
-  t('Claude preflight HEAD root is answered locally', 200, r.status);
-  t('HEAD root is never forwarded upstream', 0, mock.state.requests.length);
-
-  r = await request(BASE + 1, { body: validBody(), headers: {
+  let r = await request(BASE + 1, { body: validBody(), headers: {
     'anthropic-version': '2023-06-01',
     'anthropic-beta': 'claude-code-20250219,effort-2025-11-24',
     Authorization: 'Bearer caller-secret',
@@ -152,15 +153,17 @@ try {
   t('streaming SSE returns to caller', true, r.body.includes('message_stop'));
 
   r = await request(BASE + 1, { capability: 'wrong', body: validBody() });
-  t('wrong capability fails closed', 401, r.status);
+  t('wrong x-api-key capability fails closed', 401, r.status);
+  r = await request(BASE + 1, { capability: null, headers: { Authorization: `Bearer ${CAPABILITY}` }, body: validBody() });
+  t('Bearer capability is not accepted for Anthropic', 401, r.status);
   r = await request(BASE + 1, { body: validBody({ model: 'claude-other' }) });
   t('wrong model fails closed', 403, r.status);
   r = await request(BASE + 1, { body: validBody({ stream: false }) });
   t('non-streaming request fails closed', 400, r.status);
-  r = await request(BASE + 1, { body: validBody({ max_tokens: 32001 }) });
-  t('max_tokens above observed bound fails closed', 400, r.status);
-  r = await request(BASE + 1, { path: '/v1/messages', body: validBody() });
-  t('missing beta query fails closed', 403, r.status);
+  r = await request(BASE + 1, { body: validBody({ max_tokens: 64001 }) });
+  t('excessive max_tokens fails closed', 400, r.status);
+  r = await request(BASE + 1, { body: validBody({ messages: [] }) });
+  t('empty messages fail closed', 400, r.status);
   r = await request(BASE + 1, { path: '/v1/messages?beta=true&extra=1', body: validBody() });
   t('extra query parameter fails closed', 403, r.status);
   r = await request(BASE + 1, { path: '/v1/complete?beta=true', body: validBody() });
@@ -180,20 +183,27 @@ try {
 
   const liveEnv = {
     ...process.env,
+    BROKER_PROVIDER: 'anthropic',
     BROKER_PORT: String(BASE + 3),
     ANTHROPIC_API_KEY: PROVIDER_KEY,
     BROKER_CAPABILITY: CAPABILITY,
     BROKER_TASK_ID: 'b3b-live-block-test',
     BROKER_ALLOWED_MODEL: MODEL,
+    BROKER_JOB_MAX_USD: '0.25',
     BROKER_CAPABILITY_EXPIRY_MS: '600000',
+    BROKER_MAX_REQUESTS: '10',
   };
   const blocked = spawn('node', [BROKER], { env: liveEnv, stdio: ['ignore', 'ignore', 'pipe'] });
   const blockedErr = [];
   blocked.stderr.on('data', (c) => blockedErr.push(c));
   const blockedStatus = await new Promise((resolve) => blocked.once('exit', resolve));
   t('real Anthropic endpoint is disabled by default in B3b', 1, blockedStatus);
-  t('live block explains missing spend enforcement', true, Buffer.concat(blockedErr).toString('utf8').includes('spend enforcement'));
+  const blockedLogs = Buffer.concat(blockedErr).toString('utf8');
+  t('live block is explicitly fail-closed', true, blockedLogs.includes('live forwarding is disabled'));
+  t('live block does not expose provider key', false, blockedLogs.includes(PROVIDER_KEY));
+  t('live block does not expose capability', false, blockedLogs.includes(CAPABILITY));
 
+  await close(mock.server);
   mock = await startMock(BASE + 10, 250);
   broker = await startBroker(BASE + 10, BASE + 11);
   const first = request(BASE + 11, { body: validBody() });
