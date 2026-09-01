@@ -5,6 +5,9 @@
 #   1. Anthropic API key (profile=anthropic-api) via ANTHROPIC_API_KEY env var
 #   2. Claude subscription (profile=claude-subscription) via host-local auth
 #
+# Broker mode reuses ANTHROPIC_API_KEY only as the opaque capability slot. The
+# trusted outer executor may provide ANTHROPIC_BROKER_BASE_URL; the adapter maps
+# that non-secret routing value to Claude's ANTHROPIC_BASE_URL inside env -i.
 # Subscription mode is represented by the profile matrix but is rejected before
 # execution until trusted-host identity and per-job credential cleanup exist.
 set -uo pipefail
@@ -27,8 +30,15 @@ agent_run() {
   local model="$1" prompt="$2" logfile="$3" max_runtime="$4"
   local credential_var="$5" credential_value="$6"
   [ -n "$model" ] || fail_with "$CAT_AGENT_AUTH" "Claude model is required"
-  agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
-    claude -p "$prompt" --model "$model"
+
+  if [ -n "${ANTHROPIC_BROKER_BASE_URL:-}" ]; then
+    agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
+      env "ANTHROPIC_BASE_URL=$ANTHROPIC_BROKER_BASE_URL" \
+      claude -p "$prompt" --model "$model"
+  else
+    agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
+      claude -p "$prompt" --model "$model"
+  fi
 }
 
 is_transient_agent_error() {
