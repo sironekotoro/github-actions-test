@@ -5,6 +5,7 @@ import {
   DEFAULT_MAX_OUTPUT_TOKENS_PER_REQUEST,
   PRICING_VERSION,
   SUPPORTED_MODEL,
+  assertSupportedAnthropicShape,
   buildCountTokensBody,
   reserveAnthropicRequest,
   usdToMicroUsd,
@@ -84,7 +85,7 @@ function validateConfiguration() {
   }
 
   if (!isLoopbackProviderUrl(ANTHROPIC_PROVIDER_API_URL)) {
-    if (!ANTHROPIC_LIVE_ALLOWED) throw new Error('Anthropic live forwarding is disabled');
+    if (!ANTHROPIC_LIVE_ALLOWED) throw new Error('Anthropic live forwarding disabled until trusted per-job spend enforcement is wired');
     if (!SPEND_GUARD_ENABLED) throw new Error('Anthropic live forwarding requires spend guard enforcement');
   }
 
@@ -200,6 +201,10 @@ async function handleMessages(req, res, url) {
   try { parsed = JSON.parse(body); }
   catch { return failJson(res, 400, 'BROKER_MALFORMED_PAYLOAD', 'invalid JSON'); }
   if (!validateRequestShape(parsed, res)) return;
+  if (SPEND_GUARD_ENABLED) {
+    try { assertSupportedAnthropicShape(parsed); }
+    catch { return failJson(res, 400, 'BROKER_SPEND_SHAPE_DENIED', 'request shape is not covered by Anthropic spend policy'); }
+  }
 
   requestCount++;
   concurrentCount++;
@@ -213,17 +218,12 @@ async function handleMessages(req, res, url) {
         return failJson(res, 502, 'BROKER_TOKEN_COUNT_FAILED', 'Anthropic token count failed closed');
       }
 
-      let reservation;
-      try {
-        reservation = reserveAnthropicRequest({
-          body: parsed,
-          estimatedInputTokens,
-          remainingMicroUsd,
-          maxOutputTokensPerRequest,
-        });
-      } catch {
-        return failJson(res, 400, 'BROKER_SPEND_SHAPE_DENIED', 'request shape is not covered by Anthropic spend policy');
-      }
+      const reservation = reserveAnthropicRequest({
+        body: parsed,
+        estimatedInputTokens,
+        remainingMicroUsd,
+        maxOutputTokensPerRequest,
+      });
       if (!reservation.allowed) {
         return failJson(res, 402, reservation.reason, 'Anthropic job allowance exhausted');
       }
