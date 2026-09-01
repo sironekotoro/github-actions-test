@@ -114,13 +114,13 @@ if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$broker_profile" = tru
       [ -n "${OPENROUTER_MANAGEMENT_KEY:-}" ] || fail_with "$CAT_BROKER_UNAVAILABLE" "OPENROUTER_MANAGEMENT_KEY required for OpenRouter broker"
       broker_provider="openrouter"
       broker_allowed_model="$openrouter_model"
-      broker_secret_args+=(--env OPENROUTER_MANAGEMENT_KEY)
+      broker_secret_args+=(--env "OPENROUTER_MANAGEMENT_KEY")
       ;;
     openai-broker)
       [ -n "${OPENAI_ADMIN_KEY:-}" ] || fail_with "$CAT_BROKER_UNAVAILABLE" "OPENAI_ADMIN_KEY required for OpenAI broker"
       broker_provider="openai"
       broker_allowed_model="$codex_model"
-      broker_secret_args+=(--env OPENAI_ADMIN_KEY)
+      broker_secret_args+=(--env "OPENAI_ADMIN_KEY")
       ;;
     *)
       fail_with "$CAT_BROKER_UNAVAILABLE" "unsupported broker profile=$profile"
