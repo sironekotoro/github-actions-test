@@ -22,6 +22,7 @@ t "harness runtime network is internal-only" "yes" "$(grep -Fq 'docker network c
 t "harness contains no real Anthropic endpoint" "yes" "$(grep -Fq 'api.anthropic.com' "$SCRIPT" && echo no || echo yes)"
 t "harness uses only fake provider credential" "yes" "$(grep -Fq 'ANTHROPIC_API_KEY=b3b-fake-provider-key' "$SCRIPT" && echo yes || echo no)"
 t "harness uses opaque agent capability" "yes" "$(grep -Fq 'AGENT_CREDENTIAL_VALUE=b3b-agent-capability-marker' "$SCRIPT" && echo yes || echo no)"
+t "harness preserves explicit live gate for non-loopback Docker mock" "yes" "$(grep -Fq 'ANTHROPIC_PROVIDER_API_URL=http://mock:8080' "$SCRIPT" && grep -Fq 'BROKER_ANTHROPIC_LIVE_ALLOWED=true' "$SCRIPT" && echo yes || echo no)"
 t "harness enables candidate spend guard" "yes" "$(grep -Fq 'BROKER_ANTHROPIC_SPEND_GUARD_ENABLED=true' "$SCRIPT" && grep -Fq 'BROKER_JOB_MAX_USD=0.25' "$SCRIPT" && echo yes || echo no)"
 t "harness mounts candidate reviewed spend guard library" "yes" "$(grep -Fq 'src=$CANDIDATE/scripts/lib,dst=/runtime/lib,readonly' "$SCRIPT" && echo yes || echo no)"
 t "harness verifies Count Tokens before Messages" "yes" "$(grep -Fq 'COUNT_CAPTURE' "$SCRIPT" && grep -Fq 'COUNT_NOT_BEFORE_MESSAGES' "$SCRIPT" && echo yes || echo no)"
