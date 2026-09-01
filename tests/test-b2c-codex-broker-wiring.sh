@@ -46,6 +46,8 @@ t "Codex broker sends opaque capability through generic agent credential only" "
   "$(grep -A4 -F 'openai-broker)' "$CONTAINER" | grep -Fq 'AGENT_CREDENTIAL_VALUE="$broker_capability"' && echo yes || echo no)"
 t "brokered agent gets no provider-capable proxy env" "yes" \
   "$(grep -Fq 'if [ "$broker_profile" != true ]; then' "$CONTAINER" && echo yes || echo no)"
+t "broker proxy args remain nonempty on macOS Bash nounset" "yes" \
+  "$(grep -Fq 'agent_proxy_env=(--env NO_PROXY=localhost,127.0.0.1)' "$CONTAINER" && echo yes || echo no)"
 t "workspace credential scan uses opaque capability for both brokers" "yes" \
   "$(grep -Fq 'scan_final_workspace_for_credential "$workspace_dir" "$broker_capability"' "$CONTAINER" && echo yes || echo no)"
 
