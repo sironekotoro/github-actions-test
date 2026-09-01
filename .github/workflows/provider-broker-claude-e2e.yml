@@ -1,0 +1,115 @@
+name: Provider Broker Claude E2E
+
+on:
+  issues:
+    types: [opened]
+
+concurrency:
+  group: provider-broker-claude-e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  plan:
+    name: Validate Claude broker E2E request
+    if: >-
+      github.actor == 'sironekotoro' &&
+      github.event.issue.user.login == 'sironekotoro' &&
+      github.event.issue.title == 'Claude Broker E2E'
+    runs-on: ubuntu-latest
+    outputs:
+      trusted_sha: ${{ steps.resolve.outputs.trusted_sha }}
+      candidate_sha: ${{ steps.resolve.outputs.candidate_sha }}
+    steps:
+      - name: Resolve immutable trusted and candidate revisions
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE_BODY" =~ ^PR_NUMBER=([0-9]+)$ ]] || {
+            echo 'CLAUDE_B3B_E2E_INVALID_REQUEST: body must be exactly PR_NUMBER=<number>' >&2
+            exit 1
+          }
+          pr_number="${BASH_REMATCH[1]}"
+          pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
+          [ "$(jq -r '.state' <<<"$pr_json")" = open ] || { echo 'CLAUDE_B3B_E2E_INVALID_PR: PR must be open' >&2; exit 1; }
+          [ "$(jq -r '.base.ref' <<<"$pr_json")" = master ] || { echo 'CLAUDE_B3B_E2E_INVALID_PR: base must be master' >&2; exit 1; }
+          [ "$(jq -r '.head.repo.full_name' <<<"$pr_json")" = "$GITHUB_REPOSITORY" ] || { echo 'CLAUDE_B3B_E2E_INVALID_PR: candidate must be same repository' >&2; exit 1; }
+          candidate_sha="$(jq -r '.head.sha' <<<"$pr_json")"
+          [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'CLAUDE_B3B_E2E_INVALID_PR: invalid candidate SHA' >&2; exit 1; }
+
+          allowed_regex='^(scripts/agents/claude-code\.sh|scripts/provider-broker-anthropic\.mjs|scripts/run-agent\.sh|tests/test-claude-model-binding\.sh|tests/test-claude-request-shape-discovery\.sh|tests/test-provider-broker-anthropic\.mjs)$'
+          mapfile -t changed < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100" --jq '.[].filename')
+          [ "${#changed[@]}" -gt 0 ] || { echo 'CLAUDE_B3B_E2E_INVALID_PR: no candidate files' >&2; exit 1; }
+          for file in "${changed[@]}"; do
+            [[ "$file" =~ $allowed_regex ]] || { echo "CLAUDE_B3B_E2E_INVALID_PR: disallowed candidate file $file" >&2; exit 1; }
+          done
+
+          trusted_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" --jq '.object.sha')"
+          [[ "$trusted_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'CLAUDE_B3B_E2E_INVALID_TRUSTED_SHA' >&2; exit 1; }
+          echo "trusted_sha=$trusted_sha" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
+          echo "Validated candidate PR #$pr_number at $candidate_sha against trusted $trusted_sha"
+
+  accept:
+    name: Pinned Claude broker acceptance
+    needs: plan
+    runs-on: [self-hosted, review-repair, macOS, ARM64]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable trusted revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.plan.outputs.trusted_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Checkout immutable candidate revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.plan.outputs.candidate_sha }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Verify immutable revisions and trusted harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(git -C trusted rev-parse HEAD)" = "${{ needs.plan.outputs.trusted_sha }}" ]
+          [ "$(git -C candidate rev-parse HEAD)" = "${{ needs.plan.outputs.candidate_sha }}" ]
+          [ -f trusted/scripts/provider-broker-claude-e2e.sh ]
+          bash -n trusted/scripts/provider-broker-claude-e2e.sh
+          cmp -s trusted/docker/review-repair-agent.Dockerfile candidate/docker/review-repair-agent.Dockerfile
+
+      - name: Run pinned Claude broker E2E
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash trusted/scripts/provider-broker-claude-e2e.sh "$GITHUB_WORKSPACE/trusted" "$GITHUB_WORKSPACE/candidate"
+
+      - name: Acceptance summary
+        if: always()
+        shell: bash
+        env:
+          TRUSTED_SHA: ${{ needs.plan.outputs.trusted_sha }}
+          CANDIDATE_SHA: ${{ needs.plan.outputs.candidate_sha }}
+        run: |
+          {
+            echo '## Claude Broker E2E'
+            echo
+            echo "- Trusted harness: \`${TRUSTED_SHA}\`"
+            echo "- Candidate: \`${CANDIDATE_SHA}\`"
+            echo '- CLI: **pinned Claude Code 2.1.165**'
+            echo '- Path: **production run-agent.sh → candidate Claude adapter → candidate Anthropic broker → local mock**'
+            echo '- Provider/model inference: **0**'
+            echo '- Anthropic/subscription secrets: **not provided**'
+            echo '- Runtime network: **internal-only**'
+          } >> "$GITHUB_STEP_SUMMARY"
