@@ -10,7 +10,7 @@ t "workflow is issue-opened only" "yes" "$(grep -Fq 'types: [opened]' "$WORKFLOW
 t "workflow restricts actor and issue author" "yes" "$(grep -Fq "github.actor == 'sironekotoro'" "$WORKFLOW" && grep -Fq "github.event.issue.user.login == 'sironekotoro'" "$WORKFLOW" && echo yes || echo no)"
 t "workflow requires exact Claude broker E2E title" "yes" "$(grep -Fq "github.event.issue.title == 'Claude Broker E2E'" "$WORKFLOW" && echo yes || echo no)"
 t "workflow fixes candidate by same-repo PR head SHA" "yes" "$(grep -Fq "candidate_sha=\"\$(jq -r '.head.sha'" "$WORKFLOW" && grep -Fq ".head.repo.full_name" "$WORKFLOW" && echo yes || echo no)"
-t "workflow restricts candidate changed-file surface" "yes" "$(grep -Fq 'scripts/provider-broker-anthropic\.mjs' "$WORKFLOW" && grep -Fq 'disallowed candidate file' "$WORKFLOW" && echo yes || echo no)"
+t "workflow restricts candidate changed-file surface" "yes" "$(grep -Fq 'scripts/provider-broker-anthropic\.mjs' "$WORKFLOW" && grep -Fq 'tests/test-provider-broker-anthropic-spend-guard\.mjs' "$WORKFLOW" && grep -Fq 'disallowed candidate file' "$WORKFLOW" && echo yes || echo no)"
 t "workflow runs dedicated self-hosted acceptance" "yes" "$(grep -Fq 'runs-on: [self-hosted, review-repair, macOS, ARM64]' "$WORKFLOW" && echo yes || echo no)"
 t "workflow references no repository secrets" "yes" "$(grep -Eq 'secrets\.|ANTHROPIC_API_KEY:' "$WORKFLOW" && echo no || echo yes)"
 t "candidate Dockerfile must equal trusted master" "yes" "$(grep -Fq 'cmp -s trusted/docker/review-repair-agent.Dockerfile candidate/docker/review-repair-agent.Dockerfile' "$WORKFLOW" && echo yes || echo no)"
@@ -22,8 +22,13 @@ t "harness runtime network is internal-only" "yes" "$(grep -Fq 'docker network c
 t "harness contains no real Anthropic endpoint" "yes" "$(grep -Fq 'api.anthropic.com' "$SCRIPT" && echo no || echo yes)"
 t "harness uses only fake provider credential" "yes" "$(grep -Fq 'ANTHROPIC_API_KEY=b3b-fake-provider-key' "$SCRIPT" && echo yes || echo no)"
 t "harness uses opaque agent capability" "yes" "$(grep -Fq 'AGENT_CREDENTIAL_VALUE=b3b-agent-capability-marker' "$SCRIPT" && echo yes || echo no)"
+t "harness enables candidate spend guard" "yes" "$(grep -Fq 'BROKER_ANTHROPIC_SPEND_GUARD_ENABLED=true' "$SCRIPT" && grep -Fq 'BROKER_JOB_MAX_USD=0.25' "$SCRIPT" && echo yes || echo no)"
+t "harness mounts candidate reviewed spend guard library" "yes" "$(grep -Fq 'src=$CANDIDATE/scripts/lib,dst=/runtime/lib,readonly' "$SCRIPT" && echo yes || echo no)"
+t "harness verifies Count Tokens before Messages" "yes" "$(grep -Fq 'COUNT_CAPTURE' "$SCRIPT" && grep -Fq 'COUNT_NOT_BEFORE_MESSAGES' "$SCRIPT" && echo yes || echo no)"
 t "harness validates provider key substitution" "yes" "$(grep -Fq 'providerKeyMatch' "$SCRIPT" && grep -Fq 'CLAUDE_B3B_E2E_PROVIDER_AUTH_MISMATCH' "$SCRIPT" && echo yes || echo no)"
-t "harness validates exact model" "yes" "$(grep -Fq 'modelMatch' "$SCRIPT" && grep -Fq 'CLAUDE_B3B_E2E_MODEL_MISMATCH' "$SCRIPT" && echo yes || echo no)"
+t "harness validates exact guarded model" "yes" "$(grep -Fq 'AGENT_MODEL=claude-sonnet-5' "$SCRIPT" && grep -Fq 'modelMatch' "$SCRIPT" && echo yes || echo no)"
+t "harness validates max_tokens rewrite" "yes" "$(grep -Fq '"maxTokens":4096' "$SCRIPT" && grep -Fq 'CLAUDE_B3C_E2E_MAX_TOKENS_NOT_GUARDED' "$SCRIPT" && echo yes || echo no)"
+t "harness requires safe reservation telemetry" "yes" "$(grep -Fq 'spend reservation pricing=' "$SCRIPT" && echo yes || echo no)"
 t "harness declares zero provider inference" "yes" "$(grep -Fq "echo 'PROVIDER_INFERENCE=0'" "$SCRIPT" && echo yes || echo no)"
 
 finish
