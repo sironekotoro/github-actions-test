@@ -30,7 +30,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# agent_allowed_profiles <agent> -> prints space-separated profile keys, fails if unknown
+# agent_allowed_profiles <agent> -> prints the legacy user-selectable profile
+# keys. Broker profiles that are selected automatically by trusted routing may
+# be accepted explicitly by validate_credential_profile without widening this
+# legacy listing (which is also used by older tests/docs).
 agent_allowed_profiles() {
   local agent="$1"
   case "$agent" in
@@ -38,7 +41,7 @@ agent_allowed_profiles() {
       echo "openrouter openrouter-broker"
       ;;
     codex)
-      echo "openai-api openai-broker chatgpt-subscription"
+      echo "openai-api chatgpt-subscription"
       ;;
     claude-code)
       echo "anthropic-api claude-subscription"
@@ -111,6 +114,11 @@ validate_credential_profile() {
   for p in $allowed; do
     [ "$p" = "$profile" ] && { found=true; break; }
   done
+  # B2c broker profile is trusted-routing-only for Codex. Accept it here while
+  # keeping the legacy user-selectable profile listing stable.
+  if [ "$agent" = "codex" ] && [ "$profile" = "openai-broker" ]; then
+    found=true
+  fi
   if [ "$found" != true ]; then
     fail_with "$CAT_AGENT_AUTH" "agent=$agent does not support profile=$profile (allowed: $allowed)"
   fi
