@@ -141,6 +141,7 @@ docker run -d --name "$broker_name" --network "$network" --network-alias broker 
   --env BROKER_PORT=3080 \
   --env ANTHROPIC_API_KEY=b3b-fake-provider-key \
   --env ANTHROPIC_PROVIDER_API_URL=http://mock:8080 \
+  --env BROKER_ANTHROPIC_LIVE_ALLOWED=true \
   --env BROKER_ANTHROPIC_SPEND_GUARD_ENABLED=true \
   --env BROKER_JOB_MAX_USD=0.25 \
   --env BROKER_CAPABILITY=b3b-agent-capability-marker \
