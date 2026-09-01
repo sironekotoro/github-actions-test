@@ -120,8 +120,6 @@ try {
   t('denied admission has explicit budget reason', 'ANTHROPIC_JOB_BUDGET_EXHAUSTED', denied.reason);
   t('denied admission emits no additional Messages request', beforeDenied, state.messageRequests.length);
 
-  // First version never credits unused reservation back. A second admission
-  // starts from the monotonically lower remaining value.
   const second = reserveAnthropicRequest({
     body: requestBody,
     estimatedInputTokens: countResult.input_tokens,
