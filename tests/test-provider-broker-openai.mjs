@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -186,10 +187,18 @@ function startOpenAiMock(port, { failSpendLimit = false } = {}) {
         sendJson(res, 401, { error: { message: 'bad ephemeral project credential' } });
         return;
       }
+      const created = { type: 'response.created', response: { id: 'resp_test' } };
+      const completed = {
+        type: 'response.completed',
+        response: {
+          id: 'resp_test',
+          usage: { input_tokens: 0, input_tokens_details: null, output_tokens: 0, output_tokens_details: null, total_tokens: 0 },
+        },
+      };
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.end(
-        'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_test"}}\n\n' +
-        'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_test","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}\n\n'
+        `event: response.created\ndata: ${JSON.stringify(created)}\n\n` +
+        `event: response.completed\ndata: ${JSON.stringify(completed)}\n\n`
       );
       return;
     }
@@ -294,6 +303,11 @@ try {
   }
   t('ephemeral project service account is created', true, Boolean(project?.serviceAccountId));
 
+  const setupPaths = mock.state.adminRequests.slice(0, 5).map((r) => `${r.method} ${r.path}`);
+  t('project hard cap is configured before model permissions', true, setupPaths[1]?.endsWith('/spend_limit'));
+  t('model allowlist is configured before hosted-tool policy', true, setupPaths[2]?.endsWith('/model_permissions'));
+  t('hosted tools are disabled before service-account credential creation', true, setupPaths[3]?.endsWith('/hosted_tool_permissions') && setupPaths[4]?.endsWith('/service_accounts'));
+
   let resp = await request({ port: BASE + 1, method: 'GET', body: undefined });
   t('authenticated WebSocket GET receives immediate HTTP fallback', 426, resp.status);
   t('WebSocket GET is never forwarded to provider endpoint', 0, mock.state.providerRequests.length);
@@ -349,9 +363,7 @@ try {
   // B2a observed a ~57 KiB request even for a tiny prompt. Verify the OpenAI
   // default ceiling comfortably accepts that shape without reverting to the
   // much smaller OpenRouter default.
-  const largeB2aLikeBody = validBody({
-    client_metadata: { marker: 'x'.repeat(60_000) },
-  });
+  const largeB2aLikeBody = validBody({ client_metadata: { marker: 'x'.repeat(60_000) } });
   resp = await request({ port: BASE + 1, body: largeB2aLikeBody });
   t('OpenAI default body ceiling accepts B2a-sized request', 200, resp.status);
 
@@ -432,7 +444,7 @@ try {
 
   // Static/local-only guard: this test points both Admin and inference traffic
   // exclusively at loopback mocks and never embeds a real provider endpoint.
-  t('test harness contains no real OpenAI endpoint literal', false, (await import('node:fs')).readFileSync(fileURLToPath(import.meta.url), 'utf8').includes('api.openai.com'));
+  t('test harness contains no real OpenAI endpoint literal', false, fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').includes('api.openai.com'));
 } catch (err) {
   failed++;
   console.error(`FAIL: unexpected test error: ${err.stack || err}`);
