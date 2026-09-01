@@ -38,7 +38,6 @@ let provisionedKeyHash = null;
 let upstreamCredential = null;
 let openAiProjectId = null;
 let openAiServiceAccountId = null;
-let openAiApiKeyId = null;
 let requestCount = 0;
 let concurrentCount = 0;
 let capabilityExpiresAt = 0;
@@ -232,7 +231,6 @@ async function provisionOpenAiCredential() {
     throw new Error(`OpenAI service-account credential creation failed: HTTP ${result.status}`);
   }
   openAiServiceAccountId = result.body.id;
-  openAiApiKeyId = result.body.api_key.id;
   upstreamCredential = result.body.api_key.value;
   log('info', 'ephemeral OpenAI project credential provisioned');
 }
