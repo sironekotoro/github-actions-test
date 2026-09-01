@@ -1,0 +1,119 @@
+name: B2c Ordinary Codex Broker E2E
+
+on:
+  issues:
+    types: [opened]
+
+concurrency:
+  group: b2c-ordinary-codex-broker-e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  plan:
+    name: Validate B2c ordinary broker request
+    if: >-
+      github.actor == 'sironekotoro' &&
+      github.event.issue.user.login == 'sironekotoro' &&
+      github.event.issue.title == 'B2c Ordinary Codex Broker E2E'
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      candidate_sha: ${{ steps.resolve.outputs.candidate_sha }}
+    steps:
+      - name: Resolve same-repo B2c candidate
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          if [[ "$ISSUE_BODY" =~ ^PR_NUMBER=([0-9]+)$ ]]; then
+            pr_number="${BASH_REMATCH[1]}"
+          else
+            echo 'B2C_E2E_INVALID_REQUEST: body must be exactly PR_NUMBER=<number>' >&2
+            exit 1
+          fi
+
+          pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
+          state="$(jq -r '.state' <<<"$pr_json")"
+          draft="$(jq -r '.draft // false' <<<"$pr_json")"
+          head_repo="$(jq -r '.head.repo.full_name // ""' <<<"$pr_json")"
+          candidate_sha="$(jq -r '.head.sha // ""' <<<"$pr_json")"
+          [[ "$state" == open && "$draft" == false ]] || { echo 'B2C_E2E_INVALID_REQUEST: candidate must be open non-draft PR' >&2; exit 1; }
+          [[ "$head_repo" == "$GITHUB_REPOSITORY" ]] || { echo 'B2C_E2E_INVALID_REQUEST: candidate must be same-repo PR' >&2; exit 1; }
+          [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'B2C_E2E_INVALID_REQUEST: invalid candidate SHA' >&2; exit 1; }
+
+          files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files" --jq '.[].filename')"
+          allowed=$'.github/workflows/agent-dispatch.yml\nscripts/lib/credentials.sh\nscripts/run-agent-dispatch-container.sh\ntests/test-b2c-codex-broker-wiring.sh\ntests/test-provider-broker-workflow-wiring.sh'
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            grep -Fxq "$file" <<<"$allowed" || { echo "B2C_E2E_UNEXPECTED_CANDIDATE_FILE: $file" >&2; exit 1; }
+          done <<<"$files"
+
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
+          echo "Validated PR #${pr_number} at ${candidate_sha}"
+
+  codex-wiring-e2e:
+    name: Ordinary Agent Dispatch Codex broker acceptance
+    needs: plan
+    runs-on: [self-hosted, review-repair, macOS, ARM64]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted acceptance harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: master
+          path: trusted
+          persist-credentials: false
+
+      - name: Checkout immutable candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.plan.outputs.candidate_sha }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Verify trusted harness
+        shell: bash
+        working-directory: trusted
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse --abbrev-ref HEAD)" == master ]]
+          bash -n scripts/b2c-ordinary-codex-broker-e2e.sh
+
+      - name: Run zero-paid ordinary Codex broker acceptance
+        shell: bash
+        env:
+          CANDIDATE_PR: ${{ needs.plan.outputs.pr_number }}
+          CANDIDATE_SHA: ${{ needs.plan.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          echo "Testing PR #${CANDIDATE_PR} at ${CANDIDATE_SHA}"
+          bash trusted/scripts/b2c-ordinary-codex-broker-e2e.sh "$GITHUB_WORKSPACE/candidate"
+
+      - name: Acceptance summary
+        if: always()
+        shell: bash
+        env:
+          CANDIDATE_PR: ${{ needs.plan.outputs.pr_number }}
+          CANDIDATE_SHA: ${{ needs.plan.outputs.candidate_sha }}
+        run: |
+          {
+            echo '## B2c Ordinary Codex Broker E2E'
+            echo
+            echo "- PR: #${CANDIDATE_PR}"
+            echo "- Candidate: \`${CANDIDATE_SHA}\`"
+            echo '- CLI: **pinned @openai/codex 0.147.0**'
+            echo '- Path: **production run-agent-dispatch-container.sh → run-agent.sh → codex.sh → trusted local fake broker**'
+            echo '- Runtime agent credential: **opaque capability only**'
+            echo '- Provider/model inference: **0**'
+            echo '- Real OpenAI credentials: **not provided**'
+          } >> "$GITHUB_STEP_SUMMARY"
