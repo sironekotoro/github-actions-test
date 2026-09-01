@@ -444,7 +444,8 @@ try {
 
   // Static/local-only guard: this test points both Admin and inference traffic
   // exclusively at loopback mocks and never embeds a real provider endpoint.
-  t('test harness contains no real OpenAI endpoint literal', false, fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').includes('api.openai.com'));
+  const forbiddenProviderEndpoint = ['api', 'openai', 'com'].join('.');
+  t('test harness contains no real OpenAI endpoint literal', false, fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').includes(forbiddenProviderEndpoint));
 } catch (err) {
   failed++;
   console.error(`FAIL: unexpected test error: ${err.stack || err}`);
