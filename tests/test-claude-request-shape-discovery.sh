@@ -48,9 +48,9 @@ t "Claude discovery runs only on self-hosted review-repair Mac" "yes" \
 t "Claude discovery workflow receives no repository secrets" "yes" \
   "$( ! grep -Eq 'secrets\.|ANTHROPIC_API_KEY:' "$WORKFLOW" && echo yes || echo no)"
 
-# Freeze the B3a finding that production adapter currently drops the trusted
-# model argument; B3b must fix this before broker exact-model enforcement.
-t "B3a records Claude production adapter currently omits model flag" "yes" \
-  "$(grep -Fq 'local model="$1"' "$ADAPTER" && ! grep -Eq 'claude .*--model|claude .* -m ' "$ADAPTER" && echo yes || echo no)"
+# B3a discovered that the adapter dropped the trusted model. B3b closes that
+# gap and this regression now freezes explicit exact-model binding.
+t "B3b Claude production adapter forwards trusted model flag" "yes" \
+  "$(grep -Fq 'local model="$1"' "$ADAPTER" && grep -Fq 'claude -p "$prompt" --model "$model"' "$ADAPTER" && echo yes || echo no)"
 
 finish
