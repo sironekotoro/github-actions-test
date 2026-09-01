@@ -8,6 +8,8 @@
 # Broker mode reuses ANTHROPIC_API_KEY only as the opaque capability slot. The
 # trusted outer executor may provide ANTHROPIC_BROKER_BASE_URL; the adapter maps
 # that non-secret routing value to Claude's ANTHROPIC_BASE_URL inside env -i.
+# Tool permission prompts are bypassed only inside the hardened outer Docker
+# sandbox, matching the established OpenCode/Codex execution model.
 # Subscription mode is represented by the profile matrix but is rejected before
 # execution until trusted-host identity and per-job credential cleanup exist.
 set -uo pipefail
@@ -33,11 +35,16 @@ agent_run() {
 
   if [ -n "${ANTHROPIC_BROKER_BASE_URL:-}" ]; then
     agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
-      env "ANTHROPIC_BASE_URL=$ANTHROPIC_BROKER_BASE_URL" \
-      claude -p "$prompt" --model "$model"
+      env \
+      "ANTHROPIC_BASE_URL=$ANTHROPIC_BROKER_BASE_URL" \
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+      DISABLE_TELEMETRY=1 \
+      DISABLE_ERROR_REPORTING=1 \
+      DISABLE_AUTOUPDATER=1 \
+      claude -p "$prompt" --model "$model" --dangerously-skip-permissions
   else
     agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
-      claude -p "$prompt" --model "$model"
+      claude -p "$prompt" --model "$model" --dangerously-skip-permissions
   fi
 }
 
