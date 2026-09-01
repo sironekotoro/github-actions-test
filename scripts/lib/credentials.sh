@@ -10,6 +10,7 @@
 #   openrouter          - OpenRouter API key (repo secret OPENROUTER_API_KEY)
 #   openrouter-broker   - OpenRouter via broker (capability token replaces key)
 #   openai-api          - OpenAI API key (repo secret OPENAI_API_KEY)
+#   openai-broker       - OpenAI via broker (capability token replaces key)
 #   chatgpt-subscription - Host-local ChatGPT subscription (no credential to inject;
 #                          represented for future trusted-host provisioning only)
 #   anthropic-api       - Anthropic API key (repo secret ANTHROPIC_API_KEY)
@@ -18,7 +19,7 @@
 #
 # Compatibility matrix (agent -> allowed profiles):
 #   opencode    -> openrouter, openrouter-broker
-#   codex       -> openai-api, chatgpt-subscription
+#   codex       -> openai-api, openai-broker, chatgpt-subscription
 #   claude-code  -> anthropic-api, claude-subscription
 #
 # The credential profile is selected by the agent type. Only the matching
@@ -37,7 +38,7 @@ agent_allowed_profiles() {
       echo "openrouter openrouter-broker"
       ;;
     codex)
-      echo "openai-api chatgpt-subscription"
+      echo "openai-api openai-broker chatgpt-subscription"
       ;;
     claude-code)
       echo "anthropic-api claude-subscription"
@@ -48,9 +49,9 @@ agent_allowed_profiles() {
   esac
 }
 
-# agent_default_profile <agent> -> prints the default profile key
-# When PROVIDER_BROKER_ENABLED is true and agent is opencode,
-# automatically resolves to openrouter-broker instead of openrouter.
+# agent_default_profile <agent> -> prints the default profile key.
+# When PROVIDER_BROKER_ENABLED is true, API-backed OpenCode and Codex resolve
+# to their broker profiles. Claude remains direct until Phase B3 is wired.
 agent_default_profile() {
   local agent="$1"
   case "$agent" in
@@ -61,7 +62,13 @@ agent_default_profile() {
         echo "openrouter"
       fi
       ;;
-    codex) echo "openai-api" ;;
+    codex)
+      if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ]; then
+        echo "openai-broker"
+      else
+        echo "openai-api"
+      fi
+      ;;
     claude-code) echo "anthropic-api" ;;
     *)
       fail_with "$CAT_AGENT_AUTH" "unknown agent: $agent"
@@ -76,6 +83,7 @@ profile_env_var() {
     openrouter) echo "OPENROUTER_API_KEY" ;;
     openrouter-broker) echo "OPENROUTER_API_KEY" ;;
     openai-api) echo "OPENAI_API_KEY" ;;
+    openai-broker) echo "OPENAI_API_KEY" ;;
     chatgpt-subscription) echo "" ;;
     anthropic-api) echo "ANTHROPIC_API_KEY" ;;
     claude-subscription) echo "" ;;
@@ -144,11 +152,13 @@ assert_execution_profile_supported() {
   if profile_is_subscription "$profile"; then
     fail_with "$CAT_AGENT_AUTH" "credential profile=$profile is unsupported in Agent Dispatch until trusted-host identity, per-job provisioning, and cleanup are implemented"
   fi
-  if [ "$profile" = "openrouter-broker" ]; then
-    if [ "${PROVIDER_BROKER_ENABLED:-false}" != "true" ]; then
-      fail_with "$CAT_AGENT_AUTH" "credential profile=$profile requires PROVIDER_BROKER_ENABLED=true"
-    fi
-  fi
+  case "$profile" in
+    openrouter-broker|openai-broker)
+      if [ "${PROVIDER_BROKER_ENABLED:-false}" != "true" ]; then
+        fail_with "$CAT_AGENT_AUTH" "credential profile=$profile requires PROVIDER_BROKER_ENABLED=true"
+      fi
+      ;;
+  esac
 }
 
 # credential_summary <profile> -> prints a markdown summary line
@@ -158,6 +168,7 @@ credential_summary() {
     openrouter) label="OpenRouter API key (repo secret)" ;;
     openrouter-broker) label="OpenRouter via broker (per-job capability token)" ;;
     openai-api) label="OpenAI API key (repo secret)" ;;
+    openai-broker) label="OpenAI via broker (per-job capability token; disposable project credential held by broker)" ;;
     chatgpt-subscription) label="host-local ChatGPT subscription (no credential injected)" ;;
     anthropic-api) label="Anthropic API key (repo secret)" ;;
     claude-subscription) label="host-local Claude Code subscription (no credential injected)" ;;
