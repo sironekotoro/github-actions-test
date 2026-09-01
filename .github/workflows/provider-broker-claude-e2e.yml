@@ -44,7 +44,7 @@ jobs:
           candidate_sha="$(jq -r '.head.sha' <<<"$pr_json")"
           [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'CLAUDE_B3B_E2E_INVALID_PR: invalid candidate SHA' >&2; exit 1; }
 
-          allowed_regex='^(scripts/agents/claude-code\.sh|scripts/provider-broker-anthropic\.mjs|scripts/run-agent\.sh|tests/test-claude-model-binding\.sh|tests/test-claude-request-shape-discovery\.sh|tests/test-provider-broker-anthropic\.mjs)$'
+          allowed_regex='^(scripts/agents/claude-code\.sh|scripts/provider-broker-anthropic\.mjs|scripts/lib/anthropic-spend-guard\.mjs|scripts/run-agent\.sh|tests/test-claude-model-binding\.sh|tests/test-claude-request-shape-discovery\.sh|tests/test-provider-broker-anthropic\.mjs|tests/test-provider-broker-anthropic-spend-guard\.mjs|tests/test-anthropic-spend-guard\.mjs|tests/test-anthropic-spend-guard-integration\.mjs)$'
           mapfile -t changed < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100" --jq '.[].filename')
           [ "${#changed[@]}" -gt 0 ] || { echo 'CLAUDE_B3B_E2E_INVALID_PR: no candidate files' >&2; exit 1; }
           for file in "${changed[@]}"; do
@@ -108,7 +108,7 @@ jobs:
             echo "- Trusted harness: \`${TRUSTED_SHA}\`"
             echo "- Candidate: \`${CANDIDATE_SHA}\`"
             echo '- CLI: **pinned Claude Code 2.1.165**'
-            echo '- Path: **production run-agent.sh → candidate Claude adapter → candidate Anthropic broker → local mock**'
+            echo '- Path: **production run-agent.sh → candidate Claude adapter → candidate Anthropic broker → local Count Tokens → Spend Guard → local Messages mock**'
             echo '- Provider/model inference: **0**'
             echo '- Anthropic/subscription secrets: **not provided**'
             echo '- Runtime network: **internal-only**'
