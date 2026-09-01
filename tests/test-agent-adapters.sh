@@ -20,6 +20,7 @@ printf '%s\\n' "\$@" > "$tmp/argv"
   printf 'OPENAI_API_KEY=%s\\n' "\${OPENAI_API_KEY+x}"
   printf 'CODEX_API_KEY=%s\\n' "\${CODEX_API_KEY+x}"
   printf 'ANTHROPIC_API_KEY=%s\\n' "\${ANTHROPIC_API_KEY+x}"
+  printf 'ANTHROPIC_BASE_URL=%s\\n' "\${ANTHROPIC_BASE_URL+x}"
   printf 'GH_TOKEN=%s\\n' "\${GH_TOKEN+x}"
   printf 'GITHUB_TOKEN=%s\\n' "\${GITHUB_TOKEN+x}"
 } > "$tmp/env"
@@ -78,6 +79,9 @@ MOCK
     claude-code)
       t "Claude Code uses print flag" -p "$(sed -n '1p' "$tmp/argv")"
       t "Claude Code receives one prompt argument" 'prompt with spaces; $HOME must stay literal' "$(sed -n '2p' "$tmp/argv")"
+      t "Claude Code binds requested model with --model" --model "$(sed -n '3p' "$tmp/argv")"
+      t "Claude Code requested model value" test/model "$(sed -n '4p' "$tmp/argv")"
+      t "Claude Code bypasses inner permission prompts only inside outer sandbox" --dangerously-skip-permissions "$(sed -n '5p' "$tmp/argv")"
       ;;
   esac
 }
@@ -86,13 +90,39 @@ run_success_case opencode opencode OPENROUTER_API_KEY selected-openrouter OPENRO
 run_success_case codex codex OPENAI_API_KEY selected-openai CODEX_API_KEY codex
 run_success_case claude-code claude ANTHROPIC_API_KEY selected-anthropic ANTHROPIC_API_KEY claude-code
 
-# The production image deliberately pins the exact OpenCode release whose run
-# contract supports --auto and --agent. Do not silently drift to an invented
-# per-permission CLI flag: v1.18.16 handles permission prompts through --auto.
 t "OpenCode production CLI stays pinned at 1.18.16" "yes" "$(grep -Fq 'opencode-ai@1.18.16' "$ROOT/docker/review-repair-agent.Dockerfile" && echo yes || echo no)"
 t "OpenCode adapter does not use unsupported --permission flag" "absent" "$(grep -Eq -- '(^|[[:space:]])--permission([[:space:]]|$)' "$ROOT/scripts/agents/opencode.sh" && echo present || echo absent)"
 t "Codex production CLI stays pinned at 0.147.0" "yes" "$(grep -Fq 'CODEX_CLI_VERSION=0.147.0' "$ROOT/docker/review-repair-agent.Dockerfile" && echo yes || echo no)"
 t "Codex adapter always forwards model flag" "yes" "$(grep -Fq 'codex exec -m "$model"' "$ROOT/scripts/agents/codex.sh" && echo yes || echo no)"
+t "Claude production CLI stays pinned at 2.1.165" "yes" "$(grep -Fq 'CLAUDE_CODE_VERSION=2.1.165' "$ROOT/docker/review-repair-agent.Dockerfile" && echo yes || echo no)"
+t "Claude adapter always forwards model flag" "yes" "$(grep -Fq -- 'claude -p "$prompt" --model "$model"' "$ROOT/scripts/agents/claude-code.sh" && echo yes || echo no)"
+
+# Broker routing values may be added only through the trusted adapter path and
+# remain distinct from the opaque ANTHROPIC_API_KEY capability.
+tmp="$(make_temp)"
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/claude" <<MOCK
+#!/usr/bin/env bash
+printf '%s\\n' "\$@" > "$tmp/argv"
+printf 'ANTHROPIC_API_KEY=%s\\n' "\${ANTHROPIC_API_KEY:-}" > "$tmp/env"
+printf 'ANTHROPIC_BASE_URL=%s\\n' "\${ANTHROPIC_BASE_URL:-}" >> "$tmp/env"
+exit 0
+MOCK
+cat > "$tmp/bin/timeout" <<MOCK
+#!/usr/bin/env bash
+shift
+"\$@"
+MOCK
+chmod +x "$tmp/bin/claude" "$tmp/bin/timeout"
+(
+  export PATH="$tmp/bin:$PATH"
+  export ANTHROPIC_BROKER_BASE_URL=http://broker:3080
+  source "$ROOT/scripts/agents/claude-code.sh"
+  agent_run claude-test-model 'broker prompt' "$tmp/log" 2 ANTHROPIC_API_KEY opaque-capability-marker
+)
+t "Claude broker adapter maps trusted broker URL" "ANTHROPIC_BASE_URL=http://broker:3080" "$(grep '^ANTHROPIC_BASE_URL=' "$tmp/env")"
+t "Claude broker adapter uses opaque capability in API-key slot" "ANTHROPIC_API_KEY=opaque-capability-marker" "$(grep '^ANTHROPIC_API_KEY=' "$tmp/env")"
+t "Claude broker adapter still binds exact model" "claude-test-model" "$(sed -n '4p' "$tmp/argv")"
 
 # A non-auth Codex provider failure must still be classified by the shared
 # run-agent loop, not mistaken for an unavailable CLI or an auth failure.
