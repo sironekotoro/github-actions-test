@@ -1,0 +1,88 @@
+name: Claude Request Shape Discovery
+
+on:
+  issues:
+    types: [opened]
+
+concurrency:
+  group: claude-request-shape-discovery
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Validate Claude discovery request
+    if: >-
+      github.actor == 'sironekotoro' &&
+      github.event.issue.user.login == 'sironekotoro' &&
+      github.event.issue.title == 'Claude Request Shape Discovery'
+    runs-on: ubuntu-latest
+    outputs:
+      trusted_sha: ${{ steps.resolve.outputs.trusted_sha }}
+    steps:
+      - name: Resolve immutable master revision
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          [ "$ISSUE_BODY" = 'REF=master' ] || {
+            echo 'CLAUDE_B3A_INVALID_REQUEST: body must be exactly REF=master' >&2
+            exit 1
+          }
+          trusted_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" --jq '.object.sha')"
+          [[ "$trusted_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'CLAUDE_B3A_INVALID_REQUEST: could not resolve immutable master SHA' >&2
+            exit 1
+          }
+          echo "trusted_sha=$trusted_sha" >> "$GITHUB_OUTPUT"
+          echo "Validated master at $trusted_sha"
+
+  discover:
+    name: Pinned Claude local request-shape discovery
+    needs: plan
+    runs-on: [self-hosted, review-repair, macOS, ARM64]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable trusted revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.plan.outputs.trusted_sha }}
+          persist-credentials: false
+
+      - name: Verify trusted discovery harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "${{ needs.plan.outputs.trusted_sha }}" ]
+          [ -f scripts/claude-request-shape-discovery.sh ]
+          bash -n scripts/claude-request-shape-discovery.sh
+
+      - name: Run pinned Claude local request-shape discovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/claude-request-shape-discovery.sh "$GITHUB_WORKSPACE"
+
+      - name: Discovery summary
+        if: always()
+        shell: bash
+        env:
+          TRUSTED_SHA: ${{ needs.plan.outputs.trusted_sha }}
+        run: |
+          {
+            echo '## Claude Request Shape Discovery'
+            echo
+            echo "- Trusted revision: \`${TRUSTED_SHA}\`"
+            echo '- CLI: **pinned @anthropic-ai/claude-code 2.1.165 from trusted image**'
+            echo '- Path: **pinned Claude CLI → custom ANTHROPIC_BASE_URL → local mock**'
+            echo '- Provider/model inference: **0** (local mock only)'
+            echo '- Anthropic/subscription secrets: **not provided to this job**'
+            echo '- Runtime network: **internal-only**'
+          } >> "$GITHUB_STEP_SUMMARY"
