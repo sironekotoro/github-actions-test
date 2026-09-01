@@ -10,5 +10,9 @@ t "Claude adapter forwards exact model with --model" "yes" \
   "$(grep -Fq 'claude -p "$prompt" --model "$model"' "$ADAPTER" && echo yes || echo no)"
 t "Claude adapter does not substitute an implicit model fallback" "yes" \
   "$(grep -Eq 'ANTHROPIC_MODEL|CLAUDE_MODEL' "$ADAPTER" && echo no || echo yes)"
+t "Claude broker route is explicit trusted metadata" "yes" \
+  "$(grep -Fq 'ANTHROPIC_BROKER_BASE_URL' "$ADAPTER" && grep -Fq 'ANTHROPIC_BASE_URL=$ANTHROPIC_BROKER_BASE_URL' "$ADAPTER" && echo yes || echo no)"
+t "Claude direct path does not require broker base" "yes" \
+  "$(grep -Fq 'if [ -n "${ANTHROPIC_BROKER_BASE_URL:-}" ]' "$ADAPTER" && grep -Fq 'else' "$ADAPTER" && echo yes || echo no)"
 
 finish
