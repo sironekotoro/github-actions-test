@@ -24,8 +24,8 @@ broker_image="provider-broker:$run_key"
 [ -n "$run_key" ] || fail_with "$CAT_AGENT_START" "agent dispatch run identifier is invalid"
 
 # Resolve and validate the selected profile before creating any container or
-# starting the agent. The outer shell receives at most one generic credential
-# value; the inner clean environment maps it to the exact provider variable.
+# starting the agent. The outer shell receives at most one generic direct
+# credential value. Broker profiles generate a fresh opaque capability here.
 agent="$(jq -r '.agent // "opencode"' "$task_file")"
 if ! profile="$(resolve_credential_profile "$agent")"; then
   exit 1
@@ -34,8 +34,13 @@ assert_execution_profile_supported "$profile"
 cred_var="$(profile_env_var "$profile")"
 agent_credential=""
 broker_capability=""
+broker_profile=false
+case "$profile" in
+  openrouter-broker|openai-broker) broker_profile=true ;;
+esac
+
 if [ -n "$cred_var" ]; then
-  if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$profile" = "openrouter-broker" ]; then
+  if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$broker_profile" = true ]; then
     generate_broker_capability broker_capability
     [ -n "$broker_capability" ] || fail_with "$CAT_BROKER_AUTH_FAILED" "broker capability generation failed"
   else
@@ -53,7 +58,7 @@ docker info >/dev/null 2>&1 || fail_with "$CAT_AGENT_START" "docker daemon is un
 docker image inspect "$agent_image" >/dev/null 2>&1 || fail_with "$CAT_AGENT_START" "trusted Agent Dispatch image is unavailable"
 docker image inspect "$egress_image" >/dev/null 2>&1 || fail_with "$CAT_AGENT_START" "trusted Agent Dispatch egress image is unavailable"
 
-if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$profile" = "openrouter-broker" ]; then
+if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$broker_profile" = true ]; then
   docker image inspect "$broker_image" >/dev/null 2>&1 || fail_with "$CAT_BROKER_UNAVAILABLE" "provider broker image is unavailable"
 fi
 
@@ -82,10 +87,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Start broker container when broker is enabled.
-openroute_model="${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
+# The trusted outer wrapper resolves the exact model before broker startup.
+# This same value is passed into the isolated CLI so provider-side exact-model
+# policy and the actual Codex/OpenCode request cannot diverge.
+openrouter_model="${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
+codex_model="$(jq -r '.requested_model // empty' "$task_file")"
+[ -n "$codex_model" ] || codex_model="${CODEX_MODEL:-gpt-5.6-sol}"
+
 opencode_broker_base_url=""
-if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$profile" = "openrouter-broker" ]; then
+codex_broker_base_url=""
+if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$broker_profile" = true ]; then
   broker_task_id="$(jq -r '.task_id // empty' "$task_file")"
   [ -n "$broker_task_id" ] || fail_with "$CAT_BROKER_UNAVAILABLE" "validated task id is missing for broker"
   agent_runtime_minutes="${AGENT_MAX_RUNTIME:-30}"
@@ -94,6 +105,27 @@ if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$profile" = "openroute
   esac
   [ "$agent_runtime_minutes" -gt 0 ] || fail_with "$CAT_BROKER_UNAVAILABLE" "AGENT_MAX_RUNTIME must be a positive integer"
   broker_capability_expiry_ms="$(((agent_runtime_minutes + 5) * 60 * 1000))"
+
+  broker_provider=""
+  broker_allowed_model=""
+  broker_secret_args=()
+  case "$profile" in
+    openrouter-broker)
+      [ -n "${OPENROUTER_MANAGEMENT_KEY:-}" ] || fail_with "$CAT_BROKER_UNAVAILABLE" "OPENROUTER_MANAGEMENT_KEY required for OpenRouter broker"
+      broker_provider="openrouter"
+      broker_allowed_model="$openrouter_model"
+      broker_secret_args+=(--env OPENROUTER_MANAGEMENT_KEY)
+      ;;
+    openai-broker)
+      [ -n "${OPENAI_ADMIN_KEY:-}" ] || fail_with "$CAT_BROKER_UNAVAILABLE" "OPENAI_ADMIN_KEY required for OpenAI broker"
+      broker_provider="openai"
+      broker_allowed_model="$codex_model"
+      broker_secret_args+=(--env OPENAI_ADMIN_KEY)
+      ;;
+    *)
+      fail_with "$CAT_BROKER_UNAVAILABLE" "unsupported broker profile=$profile"
+      ;;
+  esac
 
   setup_broker_network_topology "$private_network" "$egress_network" "$broker_egress_network" \
     "$proxy_name" "$egress_image" "$run_key"
@@ -108,11 +140,12 @@ if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$profile" = "openroute
     --pids-limit=64 \
     --memory=256m \
     --tmpfs /tmp:rw,nosuid,nodev,noexec,mode=1777,size=64m \
+    -e BROKER_PROVIDER="$broker_provider" \
     -e BROKER_PORT=3080 \
-    -e OPENROUTER_MANAGEMENT_KEY \
+    "${broker_secret_args[@]}" \
     -e BROKER_CAPABILITY \
     -e BROKER_TASK_ID="$broker_task_id" \
-    -e BROKER_ALLOWED_MODEL="$openroute_model" \
+    -e BROKER_ALLOWED_MODEL="$broker_allowed_model" \
     -e BROKER_JOB_MAX_USD="${PROVIDER_JOB_MAX_USD:-0.25}" \
     -e BROKER_MAX_REQUESTS="${BROKER_MAX_REQUESTS:-500}" \
     -e BROKER_CAPABILITY_EXPIRY_MS="$broker_capability_expiry_ms" \
@@ -143,7 +176,10 @@ if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$profile" = "openroute
   done
   [ "$i" -lt 30 ] || { cleanup; fail_with "$CAT_BROKER_UNAVAILABLE" "broker health check timed out"; }
 
-  opencode_broker_base_url="http://$broker_ip:3080"
+  case "$profile" in
+    openrouter-broker) opencode_broker_base_url="http://$broker_ip:3080" ;;
+    openai-broker) codex_broker_base_url="http://$broker_ip:3080" ;;
+  esac
 else
   setup_standard_proxy "$private_network" "$egress_network" "$proxy_name" "$egress_image"
 
@@ -177,9 +213,17 @@ chmod 400 "$prompt_file"
 agent_started_epoch="$(date +%s)"
 credential_args=()
 if [ -n "$cred_var" ]; then
-  if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$profile" = "openrouter-broker" ]; then
-    export OPENROUTER_API_KEY="$broker_capability"
-    credential_args+=(--env OPENROUTER_API_KEY)
+  if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$broker_profile" = true ]; then
+    case "$profile" in
+      openrouter-broker)
+        export OPENROUTER_API_KEY="$broker_capability"
+        credential_args+=(--env OPENROUTER_API_KEY)
+        ;;
+      openai-broker)
+        export AGENT_CREDENTIAL_VALUE="$broker_capability"
+        credential_args+=(--env AGENT_CREDENTIAL_VALUE)
+        ;;
+    esac
   else
     AGENT_CREDENTIAL_VALUE="$agent_credential"
     export AGENT_CREDENTIAL_VALUE
@@ -187,11 +231,10 @@ if [ -n "$cred_var" ]; then
   fi
 fi
 
-# When broker is enabled, do NOT set HTTP_PROXY/HTTPS_PROXY for the agent.
-# The agent communicates only with the broker on the internal network.
-# The broker has its own egress path through the restricted proxy.
+# Brokered agents receive no provider-capable proxy route. They can reach only
+# the broker on the internal network; the broker owns the restricted egress.
 agent_proxy_env=()
-if [ "${PROVIDER_BROKER_ENABLED:-false}" != "true" ]; then
+if [ "$broker_profile" != true ]; then
   agent_proxy_env+=(
     --env HTTPS_PROXY="http://$proxy_ip:3128"
     --env HTTP_PROXY="http://$proxy_ip:3128"
@@ -230,12 +273,19 @@ docker run --rm --init \
   --env AGENT_CREDENTIAL_PROFILE="$profile" \
   --env AGENT_MAX_RUNTIME="${AGENT_MAX_RUNTIME:-30}" \
   --env OPENROUTER_MODEL="${OPENROUTER_MODEL:-}" \
+  --env CODEX_MODEL="$codex_model" \
   --env OPENCODE_BROKER_BASE_URL="${opencode_broker_base_url:-}" \
+  --env CODEX_BROKER_BASE_URL="${codex_broker_base_url:-}" \
   --env OPENCODE_CONFIG_CONTENT="${OPENCODE_CONFIG_CONTENT:-}" \
   --env PROVIDER_BROKER_ENABLED="${PROVIDER_BROKER_ENABLED:-false}" \
   --env AGENT_AUTO_INSTALL=false \
   "${credential_args[@]}" \
   "$agent_image" bash -ceu '
+    if [ -n "${CODEX_BROKER_BASE_URL:-}" ]; then
+      mkdir -p "$HOME/.codex"
+      printf "openai_base_url = \"%s/v1\"\n" "$CODEX_BROKER_BASE_URL" > "$HOME/.codex/config.toml"
+      chmod 600 "$HOME/.codex/config.toml"
+    fi
     bash /opt/review-repair-runner/run-agent.sh
   '
 container_status=$?
@@ -252,7 +302,7 @@ if [ -e "$workspace_dir/.git" ]; then
     || fail_with "$CAT_AGENT_START" "could not discard isolated agent .git entry"
 fi
 
-if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$profile" = "openrouter-broker" ]; then
+if [ "$broker_profile" = true ]; then
   scan_final_workspace_for_credential "$workspace_dir" "$broker_capability"
 else
   scan_final_workspace_for_credential "$workspace_dir" "$agent_credential"
@@ -276,7 +326,7 @@ TEST_RUNNER_GID="$runner_gid" \
 
 apply_agent_patch "$target_dir" "$patch_file" "$diff_status"
 
-if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$profile" = "openrouter-broker" ]; then
+if [ "$broker_profile" = true ]; then
   summary "| agent isolation | Docker; non-root; read-only root; broker-proxied egress; capability-only credential; no direct provider route; no host credentials, .git, or Docker socket |"
 else
   summary "| agent isolation | Docker; non-root; read-only root; provider-allowlisted egress; selected credential only; read-only .git-free baseline; no host credentials, .git, or Docker socket |"
