@@ -15,7 +15,6 @@ for path in \
   }
 done
 
-suffix="${GITHUB_RUN_ID:-$$}-${RANDOM}"
 run_key="$(printf '%s' "${GITHUB_RUN_ID:-$$}" | tr -cd '[:alnum:]')"
 [ -n "$run_key" ] || { echo 'B2C_E2E_INVALID_RUN_KEY' >&2; exit 1; }
 agent_image="agent-dispatch-agent:$run_key"
@@ -27,12 +26,19 @@ runtime_root="$tmpdir/runtime"
 fake_context="$tmpdir/fake-broker"
 mkdir -p "$runtime_root" "$fake_context"
 
+remove_by_ancestor() {
+  local image="$1" cid
+  while IFS= read -r cid; do
+    [ -n "$cid" ] && docker rm -f "$cid" >/dev/null 2>&1 || true
+  done < <(docker ps -aq --filter "ancestor=$image")
+}
+
 cleanup() {
   set +e
   [ -n "${wrapper_pid:-}" ] && kill "$wrapper_pid" >/dev/null 2>&1 || true
-  docker ps -aq --filter "ancestor=$agent_image" | xargs -r docker rm -f >/dev/null 2>&1 || true
-  docker ps -aq --filter "ancestor=$broker_image" | xargs -r docker rm -f >/dev/null 2>&1 || true
-  docker ps -aq --filter "ancestor=$egress_image" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  remove_by_ancestor "$agent_image"
+  remove_by_ancestor "$broker_image"
+  remove_by_ancestor "$egress_image"
   docker image rm -f "$agent_image" "$egress_image" "$broker_image" >/dev/null 2>&1 || true
   rm -rf "$tmpdir"
 }
@@ -65,7 +71,6 @@ if (!capability || provider !== 'openai' || !adminPresent || allowedModel !== 'g
   process.exit(1);
 }
 
-let postSeen = false;
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', 'http://fake');
   if (req.method === 'GET' && url.pathname === '/health') {
@@ -88,13 +93,13 @@ const server = http.createServer(async (req, res) => {
     let body = null;
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {}
     const modelOk = body?.model === allowedModel;
-    postSeen = authOk && modelOk;
+    const requestOk = authOk && modelOk;
     process.stdout.write(`B2C_POST_AUTH_OK=${authOk ? '1' : '0'}\n`);
     process.stdout.write(`B2C_POST_MODEL_OK=${modelOk ? '1' : '0'}\n`);
     await new Promise((resolve) => setTimeout(resolve, 2200));
     const created = {type:'response.created',response:{id:'resp_b2c'}};
     const completed = {type:'response.completed',response:{id:'resp_b2c',usage:{input_tokens:0,input_tokens_details:null,output_tokens:0,output_tokens_details:null,total_tokens:0}}};
-    res.writeHead(postSeen ? 200 : 400, {'content-type':'text/event-stream','cache-control':'no-cache',connection:'close'});
+    res.writeHead(requestOk ? 200 : 400, {'content-type':'text/event-stream','cache-control':'no-cache',connection:'close'});
     res.end(`event: response.created\ndata: ${JSON.stringify(created)}\n\n` +
             `event: response.completed\ndata: ${JSON.stringify(completed)}\n\n`);
     return;
@@ -183,6 +188,18 @@ esac
 
 echo 'PASS: live untrusted Codex container has capability-only broker environment'
 
+broker_logs=''
+for _ in $(seq 1 80); do
+  broker_logs="$(docker logs "agent-dispatch-broker-$run_key" 2>&1 || true)"
+  if printf '%s\n' "$broker_logs" | grep -q '^B2C_POST_MODEL_OK=1$'; then
+    break
+  fi
+  sleep 0.05
+done
+printf '%s\n' "$broker_logs" | grep -q '^B2C_WS_AUTH_OK=1$' || { echo 'B2C_E2E_WS_AUTH_NOT_PROVEN' >&2; exit 1; }
+printf '%s\n' "$broker_logs" | grep -q '^B2C_POST_AUTH_OK=1$' || { echo 'B2C_E2E_POST_AUTH_NOT_PROVEN' >&2; exit 1; }
+printf '%s\n' "$broker_logs" | grep -q '^B2C_POST_MODEL_OK=1$' || { echo 'B2C_E2E_MODEL_NOT_PROVEN' >&2; exit 1; }
+
 set +e
 wait "$wrapper_pid"
 wrapper_status=$?
@@ -198,16 +215,11 @@ reason="$(cat "$runtime_root/failure_reason" 2>/dev/null || true)"
 [ "$category" = 'AGENT_PATCH_INVALID' ] || { echo "B2C_E2E_UNEXPECTED_CATEGORY=$category" >&2; exit 1; }
 [ "$reason" = 'NO_CHANGES' ] || { echo "B2C_E2E_UNEXPECTED_REASON=$reason" >&2; exit 1; }
 
-broker_logs="$(docker logs "agent-dispatch-broker-$run_key" 2>&1 || true)"
-printf '%s\n' "$broker_logs" | grep -q '^B2C_WS_AUTH_OK=1$' || { echo 'B2C_E2E_WS_AUTH_NOT_PROVEN' >&2; exit 1; }
-printf '%s\n' "$broker_logs" | grep -q '^B2C_POST_AUTH_OK=1$' || { echo 'B2C_E2E_POST_AUTH_NOT_PROVEN' >&2; exit 1; }
-printf '%s\n' "$broker_logs" | grep -q '^B2C_POST_MODEL_OK=1$' || { echo 'B2C_E2E_MODEL_NOT_PROVEN' >&2; exit 1; }
-
 for secret in 'b2c-local-admin-marker'; do
-  ! grep -Fq "$secret" "$wrapper_stdout" "$wrapper_stderr" <<<"$broker_logs" || {
+  if grep -Fq "$secret" "$wrapper_stdout" "$wrapper_stderr" || printf '%s\n' "$broker_logs" | grep -Fq "$secret"; then
     echo 'B2C_E2E_SECRET_LEAKED_TO_LOG' >&2
     exit 1
-  }
+  fi
 done
 
 echo 'PASS: real Codex used opaque capability and exact model through ordinary broker wiring'
