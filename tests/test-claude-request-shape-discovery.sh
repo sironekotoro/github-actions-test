@@ -20,6 +20,10 @@ t "Claude discovery uses fake capability rather than real API secret" "yes" \
   "$(grep -Fq 'ANTHROPIC_API_KEY=b3a-local-capability' "$SCRIPT" && echo yes || echo no)"
 t "Claude discovery disables nonessential traffic" "yes" \
   "$(grep -Fq 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1' "$SCRIPT" && grep -Fq 'DISABLE_TELEMETRY=1' "$SCRIPT" && grep -Fq 'DISABLE_ERROR_REPORTING=1' "$SCRIPT" && grep -Fq 'DISABLE_AUTOUPDATER=1' "$SCRIPT" && echo yes || echo no)"
+t "Claude discovery runs probe as non-root runner identity" "yes" \
+  "$(grep -Fq 'runner_uid="$(id -u)"' "$SCRIPT" && grep -Fq '[ "$runner_uid" -ne 0 ]' "$SCRIPT" && grep -Fq -- '--user "$runner_uid:$runner_gid"' "$SCRIPT" && echo yes || echo no)"
+t "Claude discovery keeps non-root runtime tmpfs writable" "yes" \
+  "$(grep -Fq -- '--tmpfs /runtime:rw,nosuid,nodev,mode=1777,size=128m' "$SCRIPT" && grep -Fq -- '--tmpfs /tmp:rw,nosuid,nodev,mode=1777,size=128m' "$SCRIPT" && echo yes || echo no)"
 
 # Request-shape capture records metadata only; prompt/body/credential values are
 # never emitted in CAPTURE records.

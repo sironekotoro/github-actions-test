@@ -15,6 +15,10 @@ workspace="$tmpdir/workspace"
 mkdir -p "$workspace"
 printf 'B3a local Claude request-shape discovery workspace.\n' > "$workspace/README.txt"
 
+runner_uid="$(id -u)"
+runner_gid="$(id -g)"
+[ "$runner_uid" -ne 0 ] || { echo "CLAUDE_B3A_INVALID_RUNNER: discovery requires a non-root self-hosted runner" >&2; exit 1; }
+
 cleanup() {
   docker rm -f "$probe_name" "$mock_name" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
@@ -157,9 +161,9 @@ done
 
 set +e
 docker run --name "$probe_name" --network "$network" \
-  --read-only --cap-drop=ALL --security-opt=no-new-privileges \
-  --tmpfs /runtime:rw,nosuid,nodev,size=128m \
-  --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+  --read-only --user "$runner_uid:$runner_gid" --cap-drop=ALL --security-opt=no-new-privileges \
+  --tmpfs /runtime:rw,nosuid,nodev,mode=1777,size=128m \
+  --tmpfs /tmp:rw,nosuid,nodev,mode=1777,size=128m \
   --mount "type=bind,src=$workspace,dst=/workspace" --workdir /workspace \
   --env HOME=/runtime/home \
   --env ANTHROPIC_API_KEY=b3a-local-capability \
