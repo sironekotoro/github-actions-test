@@ -233,13 +233,14 @@ fi
 
 # Brokered agents receive no provider-capable proxy route. They can reach only
 # the broker on the internal network; the broker owns the restricted egress.
-agent_proxy_env=()
+# Keep one harmless NO_PROXY entry so macOS Bash 3.2 + nounset never expands an
+# empty array in broker mode. Provider-capable proxy variables remain absent.
+agent_proxy_env=(--env NO_PROXY=localhost,127.0.0.1)
 if [ "$broker_profile" != true ]; then
   agent_proxy_env+=(
     --env HTTPS_PROXY="http://$proxy_ip:3128"
     --env HTTP_PROXY="http://$proxy_ip:3128"
     --env ALL_PROXY="http://$proxy_ip:3128"
-    --env NO_PROXY=localhost,127.0.0.1
   )
 fi
 
