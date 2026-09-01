@@ -67,9 +67,11 @@ MOCK
       ;;
     codex)
       t "Codex uses exec" exec "$(sed -n '1p' "$tmp/argv")"
-      t "Codex relies on external sandbox" --dangerously-bypass-approvals-and-sandbox "$(sed -n '2p' "$tmp/argv")"
-      t "Codex uses --skip-git-repo-check" --skip-git-repo-check "$(sed -n '3p' "$tmp/argv")"
-      t "Codex receives one prompt argument" 'prompt with spaces; $HOME must stay literal' "$(sed -n '4p' "$tmp/argv")"
+      t "Codex binds requested model with -m" -m "$(sed -n '2p' "$tmp/argv")"
+      t "Codex requested model value" test/model "$(sed -n '3p' "$tmp/argv")"
+      t "Codex relies on external sandbox" --dangerously-bypass-approvals-and-sandbox "$(sed -n '4p' "$tmp/argv")"
+      t "Codex uses --skip-git-repo-check" --skip-git-repo-check "$(sed -n '5p' "$tmp/argv")"
+      t "Codex receives one prompt argument" 'prompt with spaces; $HOME must stay literal' "$(sed -n '6p' "$tmp/argv")"
       t "Codex does not request nested workspace sandbox" "absent" "$(grep -qx -- '--sandbox' "$tmp/argv" && echo present || echo absent)"
       t "Codex adapter does not use legacy run" no "$(grep -qx run "$tmp/argv" && echo yes || echo no)"
       ;;
@@ -89,6 +91,8 @@ run_success_case claude-code claude ANTHROPIC_API_KEY selected-anthropic ANTHROP
 # per-permission CLI flag: v1.18.16 handles permission prompts through --auto.
 t "OpenCode production CLI stays pinned at 1.18.16" "yes" "$(grep -Fq 'opencode-ai@1.18.16' "$ROOT/docker/review-repair-agent.Dockerfile" && echo yes || echo no)"
 t "OpenCode adapter does not use unsupported --permission flag" "absent" "$(grep -Eq -- '(^|[[:space:]])--permission([[:space:]]|$)' "$ROOT/scripts/agents/opencode.sh" && echo present || echo absent)"
+t "Codex production CLI stays pinned at 0.147.0" "yes" "$(grep -Fq 'CODEX_CLI_VERSION=0.147.0' "$ROOT/docker/review-repair-agent.Dockerfile" && echo yes || echo no)"
+t "Codex adapter always forwards model flag" "yes" "$(grep -Fq 'codex exec -m "$model"' "$ROOT/scripts/agents/codex.sh" && echo yes || echo no)"
 
 # A non-auth Codex provider failure must still be classified by the shared
 # run-agent loop, not mistaken for an unavailable CLI or an auth failure.
@@ -112,6 +116,7 @@ printf '%s\n' '{"agent":"codex"}' > "$tmp/task.json"
   export AGENT_LOG="$tmp/agent.log" GITHUB_STEP_SUMMARY="$tmp/summary" GITHUB_OUTPUT="$tmp/output"
   export AGENT_USE_PREBUILT_PROMPT=true AGENT_AUTO_INSTALL=false AGENT_MAX_ATTEMPTS=1
   export AGENT_CREDENTIAL_PROFILE=openai-api AGENT_CREDENTIAL_VALUE=selected-openai
+  export AGENT_MODEL=test/model
   bash "$ROOT/scripts/run-agent.sh" >"$tmp/stdout" 2>"$tmp/stderr"
 )
 status=$?
@@ -143,6 +148,7 @@ printf '%s\n' '{"agent":"codex"}' > "$tmp/task.json"
   export AGENT_LOG="$tmp/agent.log" GITHUB_STEP_SUMMARY="$tmp/summary" GITHUB_OUTPUT="$tmp/output"
   export AGENT_USE_PREBUILT_PROMPT=true AGENT_AUTO_INSTALL=false AGENT_MAX_ATTEMPTS=2
   export AGENT_CREDENTIAL_PROFILE=openai-api AGENT_CREDENTIAL_VALUE=selected-openai-secret-marker
+  export AGENT_MODEL=test/model
   bash "$ROOT/scripts/run-agent.sh" >"$tmp/stdout" 2>"$tmp/stderr"
 )
 status=$?
