@@ -11,10 +11,9 @@ const OPENROUTER_MANAGEMENT_KEY = process.env.OPENROUTER_MANAGEMENT_KEY || '';
 const OPENROUTER_MANAGEMENT_API_URL = process.env.OPENROUTER_MANAGEMENT_API_URL || 'https://openrouter.ai/api/v1/keys';
 const OPENROUTER_PROVIDER_API_URL = process.env.OPENROUTER_PROVIDER_API_URL || 'https://openrouter.ai';
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const OPENAI_ADMIN_KEY = process.env.OPENAI_ADMIN_KEY || '';
+const OPENAI_ADMIN_API_URL = process.env.OPENAI_ADMIN_API_URL || 'https://api.openai.com/v1';
 const OPENAI_PROVIDER_API_URL = process.env.OPENAI_PROVIDER_API_URL || 'https://api.openai.com';
-const OPENAI_ORGANIZATION = process.env.OPENAI_ORGANIZATION || '';
-const OPENAI_PROJECT = process.env.OPENAI_PROJECT || '';
 
 const CAPABILITY = process.env.BROKER_CAPABILITY || '';
 const CAPABILITY_TASK_ID = process.env.BROKER_TASK_ID || '';
@@ -37,11 +36,15 @@ if (PROXY_URL) {
 
 let provisionedKeyHash = null;
 let upstreamCredential = null;
+let openAiProjectId = null;
+let openAiServiceAccountId = null;
+let openAiApiKeyId = null;
 let requestCount = 0;
 let concurrentCount = 0;
 let capabilityExpiresAt = 0;
 let cleanedUp = false;
 let maxBodyBytes = 0;
+let openAiSpendLimitCents = 0;
 
 function log(level, msg) {
   const ts = new Date().toISOString();
@@ -62,6 +65,10 @@ function validPositiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0;
 }
 
+function isSuccessStatus(status) {
+  return status >= 200 && status < 300;
+}
+
 function validateConfiguration() {
   if (PROVIDER !== 'openrouter' && PROVIDER !== 'openai') {
     throw new Error('BROKER_PROVIDER must be openrouter or openai');
@@ -69,8 +76,8 @@ function validateConfiguration() {
   if (PROVIDER === 'openrouter' && !OPENROUTER_MANAGEMENT_KEY) {
     throw new Error('OPENROUTER_MANAGEMENT_KEY required');
   }
-  if (PROVIDER === 'openai' && !OPENAI_API_KEY) {
-    throw new Error('OPENAI_API_KEY required');
+  if (PROVIDER === 'openai' && !OPENAI_ADMIN_KEY) {
+    throw new Error('OPENAI_ADMIN_KEY required');
   }
   if (!CAPABILITY) throw new Error('BROKER_CAPABILITY required');
   if (!CAPABILITY_TASK_ID) throw new Error('BROKER_TASK_ID required');
@@ -80,6 +87,15 @@ function validateConfiguration() {
   if (!validPositiveInteger(CAPABILITY_MAX_REQUESTS)) throw new Error('BROKER_MAX_REQUESTS invalid');
   if (!Number.isFinite(CAPABILITY_JOB_MAX_USD) || CAPABILITY_JOB_MAX_USD <= 0) {
     throw new Error('BROKER_JOB_MAX_USD invalid');
+  }
+
+  if (PROVIDER === 'openai') {
+    // OpenAI project hard spend limits are configured in whole cents. Round
+    // down so provider-side enforcement can never exceed the trusted job cap.
+    openAiSpendLimitCents = Math.floor((CAPABILITY_JOB_MAX_USD * 100) + 1e-9);
+    if (!validPositiveInteger(openAiSpendLimitCents)) {
+      throw new Error('BROKER_JOB_MAX_USD is below OpenAI hard-limit granularity');
+    }
   }
 
   if (BODY_LIMIT_RAW) {
@@ -93,33 +109,42 @@ function validateConfiguration() {
   }
 }
 
-async function managementFetch(method, path, body) {
-  const url = `${OPENROUTER_MANAGEMENT_API_URL}${path}`;
-  const headers = { Authorization: `Bearer ${OPENROUTER_MANAGEMENT_KEY}`, 'Content-Type': 'application/json' };
+async function jsonFetch(url, method, authorization, body) {
+  const headers = { Authorization: `Bearer ${authorization}`, 'Content-Type': 'application/json' };
   const opts = { method, headers };
-  if (body) opts.body = JSON.stringify(body);
+  if (body !== undefined && body !== null) opts.body = JSON.stringify(body);
   if (ProxyAgent) opts.dispatcher = new ProxyAgent(PROXY_URL);
   const response = await fetch(url, opts);
-  if (response.status === 204) {
-    return { status: response.status, body: null };
+  const text = await response.text();
+  let parsed = null;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
   }
-  const resBody = await response.json();
-  return { status: response.status, body: resBody };
+  return { status: response.status, body: parsed };
 }
 
-async function provisionProviderCredential() {
-  if (PROVIDER === 'openai') {
-    upstreamCredential = OPENAI_API_KEY;
-    log('info', 'OpenAI upstream credential loaded');
-    return;
-  }
+async function managementFetch(method, path, body) {
+  return jsonFetch(`${OPENROUTER_MANAGEMENT_API_URL}${path}`, method, OPENROUTER_MANAGEMENT_KEY, body);
+}
 
+async function openAiAdminFetch(method, path, body) {
+  return jsonFetch(`${OPENAI_ADMIN_API_URL}${path}`, method, OPENAI_ADMIN_KEY, body);
+}
+
+function safeTaskName(prefix) {
+  const task = CAPABILITY_TASK_ID.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || 'task';
+  return `${prefix}-${task}-${Date.now()}`.slice(0, 64);
+}
+
+async function provisionOpenRouterCredential() {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + CAPABILITY_EXPIRY_MS + 300000);
-  const safeTaskId = CAPABILITY_TASK_ID.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 36) || 'task';
-  const safeName = `broker-${safeTaskId}-${now.getTime()}`.substring(0, 64);
   const payload = {
-    name: safeName,
+    name: safeTaskName('broker'),
     limit: CAPABILITY_JOB_MAX_USD,
     limit_reset: null,
     expires_at: expiresAt.toISOString(),
@@ -133,21 +158,98 @@ async function provisionProviderCredential() {
   log('info', 'temporary key provisioned');
 }
 
-async function cleanupProviderCredential() {
-  if (cleanedUp) return;
-  cleanedUp = true;
+async function provisionOpenAiCredential() {
+  // A fresh project is the per-job provider-side security boundary. Because it
+  // begins with zero spend, a monthly hard limit on this disposable project is
+  // equivalent to a lifetime limit for the job. The project also carries an
+  // exact model allowlist and disables every OpenAI-hosted tool before any
+  // inference-capable credential is created.
+  let result = await openAiAdminFetch('POST', '/organization/projects', {
+    name: safeTaskName('agent-broker'),
+  });
+  if (!isSuccessStatus(result.status) || !result.body?.id) {
+    throw new Error(`OpenAI project creation failed: HTTP ${result.status}`);
+  }
+  openAiProjectId = result.body.id;
 
+  result = await openAiAdminFetch('POST', `/organization/projects/${openAiProjectId}/spend_limit`, {
+    currency: 'USD',
+    interval: 'month',
+    threshold_amount: openAiSpendLimitCents,
+  });
+  if (
+    !isSuccessStatus(result.status) ||
+    result.body?.currency !== 'USD' ||
+    result.body?.interval !== 'month' ||
+    Number(result.body?.threshold_amount) !== openAiSpendLimitCents ||
+    result.body?.enforcement?.status !== 'enforcing'
+  ) {
+    throw new Error(`OpenAI hard spend limit was not confirmed: HTTP ${result.status}`);
+  }
+  log('info', `OpenAI hard spend limit confirmed at ${openAiSpendLimitCents} cents`);
+
+  result = await openAiAdminFetch('POST', `/organization/projects/${openAiProjectId}/model_permissions`, {
+    mode: 'allow_list',
+    model_ids: [CAPABILITY_MODEL],
+  });
+  if (
+    !isSuccessStatus(result.status) ||
+    result.body?.mode !== 'allow_list' ||
+    !Array.isArray(result.body?.model_ids) ||
+    result.body.model_ids.length !== 1 ||
+    result.body.model_ids[0] !== CAPABILITY_MODEL
+  ) {
+    throw new Error(`OpenAI exact model allowlist was not confirmed: HTTP ${result.status}`);
+  }
+  log('info', 'OpenAI exact model allowlist confirmed');
+
+  const disabledHostedTools = {
+    file_search: { enabled: false },
+    web_search: { enabled: false },
+    image_generation: { enabled: false },
+    mcp: { enabled: false },
+    code_interpreter: { enabled: false },
+  };
+  result = await openAiAdminFetch('POST', `/organization/projects/${openAiProjectId}/hosted_tool_permissions`, disabledHostedTools);
+  const hostedToolsDisabled = Object.keys(disabledHostedTools).every(
+    (name) => result.body?.[name]?.enabled === false,
+  );
+  if (!isSuccessStatus(result.status) || !hostedToolsDisabled) {
+    throw new Error(`OpenAI hosted-tool deny policy was not confirmed: HTTP ${result.status}`);
+  }
+  log('info', 'OpenAI hosted tools disabled');
+
+  result = await openAiAdminFetch('POST', `/organization/projects/${openAiProjectId}/service_accounts`, {
+    name: safeTaskName('agent-job'),
+  });
+  if (
+    !isSuccessStatus(result.status) ||
+    !result.body?.id ||
+    result.body?.role !== 'member' ||
+    !result.body?.api_key?.id ||
+    !result.body?.api_key?.value
+  ) {
+    throw new Error(`OpenAI service-account credential creation failed: HTTP ${result.status}`);
+  }
+  openAiServiceAccountId = result.body.id;
+  openAiApiKeyId = result.body.api_key.id;
+  upstreamCredential = result.body.api_key.value;
+  log('info', 'ephemeral OpenAI project credential provisioned');
+}
+
+async function provisionProviderCredential() {
   if (PROVIDER === 'openai') {
-    upstreamCredential = null;
-    log('info', 'OpenAI upstream credential released');
+    await provisionOpenAiCredential();
     return;
   }
+  await provisionOpenRouterCredential();
+}
 
+async function cleanupOpenRouterCredential() {
   if (!provisionedKeyHash) return;
   try {
     const { status } = await managementFetch('DELETE', `/${provisionedKeyHash}`);
     if (status === 200 || status === 204) {
-      upstreamCredential = null;
       log('info', 'temporary key deleted');
       return;
     }
@@ -155,6 +257,46 @@ async function cleanupProviderCredential() {
   } catch {
     log('warn', 'delete failed; expiry fallback');
   }
+}
+
+async function cleanupOpenAiCredential() {
+  // Remove the inference-capable service account first. Even if cleanup is
+  // interrupted, the disposable project retains its hard spend limit, exact
+  // model allowlist, and hosted-tool deny policy as provider-side fallbacks.
+  upstreamCredential = null;
+
+  if (openAiProjectId && openAiServiceAccountId) {
+    try {
+      const result = await openAiAdminFetch(
+        'DELETE',
+        `/organization/projects/${openAiProjectId}/service_accounts/${openAiServiceAccountId}`,
+      );
+      if (isSuccessStatus(result.status)) log('info', 'ephemeral OpenAI service account deleted');
+      else log('warn', 'OpenAI service-account delete failed; project hard limit remains');
+    } catch {
+      log('warn', 'OpenAI service-account delete failed; project hard limit remains');
+    }
+  }
+
+  if (openAiProjectId) {
+    try {
+      const result = await openAiAdminFetch('POST', `/organization/projects/${openAiProjectId}/archive`, null);
+      if (isSuccessStatus(result.status) && result.body?.status === 'archived') {
+        log('info', 'ephemeral OpenAI project archived');
+      } else {
+        log('warn', 'OpenAI project archive failed; hard limit remains');
+      }
+    } catch {
+      log('warn', 'OpenAI project archive failed; hard limit remains');
+    }
+  }
+}
+
+async function cleanupProviderCredential() {
+  if (cleanedUp) return;
+  cleanedUp = true;
+  if (PROVIDER === 'openai') await cleanupOpenAiCredential();
+  else await cleanupOpenRouterCredential();
   upstreamCredential = null;
 }
 
@@ -323,9 +465,8 @@ async function handleProxy(req, res) {
   if (!upstreamHeaders['Content-Type'] && !upstreamHeaders['content-type']) {
     upstreamHeaders['Content-Type'] = 'application/json';
   }
-  if (PROVIDER === 'openai') {
-    if (OPENAI_ORGANIZATION) upstreamHeaders['OpenAI-Organization'] = OPENAI_ORGANIZATION;
-    if (OPENAI_PROJECT) upstreamHeaders['OpenAI-Project'] = OPENAI_PROJECT;
+  if (PROVIDER === 'openai' && openAiProjectId) {
+    upstreamHeaders['OpenAI-Project'] = openAiProjectId;
   }
 
   const upstreamUrl = `${providerBaseUrl()}${url.pathname}`;
@@ -346,10 +487,12 @@ async function handleProxy(req, res) {
       }
       res.end();
     } else {
-      const data = await upstreamRes.json();
-      const resp = JSON.stringify(data);
-      res.writeHead(upstreamRes.status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(resp) });
-      res.end(resp);
+      const text = await upstreamRes.text();
+      res.writeHead(upstreamRes.status, {
+        'Content-Type': upstreamRes.headers.get('content-type') || 'application/json',
+        'Content-Length': Buffer.byteLength(text),
+      });
+      res.end(text);
     }
   } catch (err) {
     failJson(res, 502, 'BROKER_UPSTREAM_FAILED', `upstream error: ${err.message}`);
@@ -396,7 +539,12 @@ async function start() {
   process.on('SIGINT', shutdown);
 }
 
-start().catch(err => {
+start().catch(async (err) => {
+  try {
+    await cleanupProviderCredential();
+  } catch {
+    // Best effort only; provider-side hard limit remains on any created project.
+  }
   log('error', `fatal: ${err.message}`);
   process.exit(1);
 });
