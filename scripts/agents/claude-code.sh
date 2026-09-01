@@ -26,8 +26,9 @@ agent_get_version() {
 agent_run() {
   local model="$1" prompt="$2" logfile="$3" max_runtime="$4"
   local credential_var="$5" credential_value="$6"
+  [ -n "$model" ] || fail_with "$CAT_AGENT_AUTH" "Claude model is required"
   agent_run_clean "$credential_var" "$credential_value" "$max_runtime" "$logfile" -- \
-    claude -p "$prompt"
+    claude -p "$prompt" --model "$model"
 }
 
 is_transient_agent_error() {
