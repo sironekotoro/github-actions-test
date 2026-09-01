@@ -9,8 +9,8 @@ DISPATCH="$ROOT/.github/workflows/agent-dispatch.yml"
 CONTAINER="$ROOT/scripts/run-agent-dispatch-container.sh"
 
 # Credential profile contract.
-t "Codex allows OpenAI broker profile" "yes" \
-  "$(grep -Fq 'echo "openai-api openai-broker chatgpt-subscription"' "$CREDS" && echo yes || echo no)"
+t "Codex accepts trusted OpenAI broker profile" "yes" \
+  "$(grep -Fq '[ "$agent" = "codex" ] && [ "$profile" = "openai-broker" ]' "$CREDS" && echo yes || echo no)"
 t "Codex defaults to broker profile when broker enabled" "yes" \
   "$(grep -A8 -F 'codex)' "$CREDS" | grep -Fq 'echo "openai-broker"' && echo yes || echo no)"
 t "OpenAI broker capability uses OpenAI external credential contract" "yes" \
