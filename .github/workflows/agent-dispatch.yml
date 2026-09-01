@@ -321,7 +321,7 @@ jobs:
           BUDGET_STATE: ${{ needs.route.outputs.budget_state }}
           BUDGET_AVAILABLE_USD: ${{ needs.route.outputs.budget_available_usd }}
           BUDGET_HARD_FLOOR_USD: ${{ needs.route.outputs.budget_hard_floor_usd }}
-          BUDGET_REQUIRED_JOB_RESERVE_USD: ${{ needs.route.outputs.required_job_reserve_usd }}
+          BUDGET_REQUIRED_JOB_RESERVE_USD: ${{ needs.route.outputs.budget_required_job_reserve_usd }}
           BILLING_EMAIL_ENABLED: ${{ vars.BILLING_EMAIL_ENABLED || 'false' }}
           BILLING_ALERT_RECOVERY_EMAIL: ${{ vars.BILLING_ALERT_RECOVERY_EMAIL || 'false' }}
           BILLING_ALERT_EMAIL_TO: ${{ vars.BILLING_ALERT_EMAIL_TO }}
