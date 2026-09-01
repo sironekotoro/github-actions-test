@@ -34,13 +34,16 @@ if [ -n "${AGENT_HOME:-}" ]; then
 fi
 
 # Return the trusted per-agent fallback used only when a normalized task did not
-# request a model explicitly. Codex must never inherit the OpenRouter model
-# fallback now that its adapter binds `-m` authoritatively.
+# request a model explicitly. Codex and Claude must never inherit the OpenRouter
+# model fallback now that their adapters bind the model authoritatively.
 agent_fallback_model() {
   local selected_agent="$1"
   case "$selected_agent" in
     codex)
       printf '%s\n' "${CODEX_MODEL:-gpt-5.6-sol}"
+      ;;
+    claude-code)
+      printf '%s\n' "${CLAUDE_MODEL:-claude-sonnet-5}"
       ;;
     *)
       printf '%s\n' "${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
