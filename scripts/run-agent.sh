@@ -33,6 +33,21 @@ if [ -n "${AGENT_HOME:-}" ]; then
   export HOME
 fi
 
+# Return the trusted per-agent fallback used only when a normalized task did not
+# request a model explicitly. Codex must never inherit the OpenRouter model
+# fallback now that its adapter binds `-m` authoritatively.
+agent_fallback_model() {
+  local selected_agent="$1"
+  case "$selected_agent" in
+    codex)
+      printf '%s\n' "${CODEX_MODEL:-gpt-5.6-sol}"
+      ;;
+    *)
+      printf '%s\n' "${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
+      ;;
+  esac
+}
+
 # --- resolve agent ---
 # A prebuilt prompt in the isolated container intentionally has no task file.
 # The trusted outer wrapper passes the normalized agent explicitly in that
@@ -45,7 +60,8 @@ fi
 profile=""
 if [ "${AGENT_USE_PREBUILT_PROMPT:-false}" = "true" ]; then
   [ -s "$PROMPT_FILE" ] || fail_with "$CAT_AGENT_START" "trusted prebuilt prompt is missing"
-  model="${AGENT_MODEL:-${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}}"
+  model="${AGENT_MODEL:-}"
+  [ -n "$model" ] || model="$(agent_fallback_model "$agent")"
   max_runtime="${AGENT_MAX_RUNTIME:-10}"
   agent_load_adapter "$agent"
   if ! profile="$(resolve_credential_profile "$agent")"; then
@@ -59,7 +75,7 @@ else
   fi
   "$prompt_builder" || fail_with "$CAT_AGENT_START" "prompt build failed"
   model="$(jq -r '.requested_model // ""' "$TASK_FILE")"
-  [ -z "$model" ] && model="${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
+  [ -n "$model" ] || model="$(agent_fallback_model "$agent")"
   max_runtime="$(jq -r '.max_runtime // ""' "$TASK_FILE")"
   [ -z "$max_runtime" ] && max_runtime="${AGENT_MAX_RUNTIME:-10}"
   agent_load_adapter "$agent"
