@@ -16,22 +16,22 @@ t "Codex defaults to broker profile when broker enabled" "yes" \
 t "OpenAI broker capability uses OpenAI external credential contract" "yes" \
   "$(grep -Fq 'openai-broker) echo "OPENAI_API_KEY"' "$CREDS" && echo yes || echo no)"
 t "OpenAI broker profile requires feature flag" "yes" \
-  "$(grep -Fq 'openrouter-broker|openai-broker)' "$CREDS" && grep -Fq 'requires PROVIDER_BROKER_ENABLED=true' "$CREDS" && echo yes || echo no)"
+  "$(grep -Fq 'openrouter-broker|openai-broker|anthropic-broker)' "$CREDS" && grep -Fq 'requires PROVIDER_BROKER_ENABLED=true' "$CREDS" && echo yes || echo no)"
 
 # Trusted workflow wiring: direct OpenAI key is withheld in broker mode and the
 # Admin key is available only to the trusted composite action invocation.
 t "dispatch withholds direct OpenAI key in Codex broker mode" "yes" \
   "$(grep -Fq "needs.route.outputs.agent == 'codex' && vars.PROVIDER_BROKER_ENABLED != 'true' && secrets.OPENAI_API_KEY" "$DISPATCH" && echo yes || echo no)"
-t "dispatch enables broker for OpenCode or Codex only" "yes" \
-  "$(grep -Fq "provider_broker_enabled: \${{ contains(fromJSON('[\"opencode\",\"codex\"]'), needs.route.outputs.agent) && vars.PROVIDER_BROKER_ENABLED == 'true' && 'true' || 'false' }}" "$DISPATCH" && echo yes || echo no)"
+t "dispatch continues enabling broker for Codex" "yes" \
+  "$(grep -Fq "provider_broker_enabled: \${{ contains(fromJSON('[\"opencode\",\"codex\",\"claude-code\"]'), needs.route.outputs.agent) && vars.PROVIDER_BROKER_ENABLED == 'true' && 'true' || 'false' }}" "$DISPATCH" && echo yes || echo no)"
 t "dispatch passes OpenAI Admin key only for enabled Codex broker" "yes" \
   "$(grep -Fq "OPENAI_ADMIN_KEY: \${{ needs.route.outputs.agent == 'codex' && vars.PROVIDER_BROKER_ENABLED == 'true' && secrets.OPENAI_ADMIN_KEY || '' }}" "$DISPATCH" && echo yes || echo no)"
 t "dispatch still scopes OpenRouter management key to OpenCode" "yes" \
   "$(grep -Fq "openrouter_management_key: \${{ needs.route.outputs.agent == 'opencode' && vars.PROVIDER_BROKER_ENABLED == 'true' && secrets.OPENROUTER_MANAGEMENT_KEY || '' }}" "$DISPATCH" && echo yes || echo no)"
 
 # Trusted outer-container routing.
-t "container recognizes both broker profiles" "yes" \
-  "$(grep -Fq 'openrouter-broker|openai-broker) broker_profile=true' "$CONTAINER" && echo yes || echo no)"
+t "container continues recognizing OpenRouter and OpenAI broker profiles" "yes" \
+  "$(grep -Fq 'openrouter-broker|openai-broker|anthropic-broker) broker_profile=true' "$CONTAINER" && echo yes || echo no)"
 t "OpenAI broker requires Admin key before startup" "yes" \
   "$(grep -Fq 'OPENAI_ADMIN_KEY required for OpenAI broker' "$CONTAINER" && echo yes || echo no)"
 t "OpenAI broker selects provider mode explicitly" "yes" \
@@ -43,7 +43,7 @@ t "Codex broker passes same exact model into isolated CLI" "yes" \
 t "Codex broker points isolated Codex HOME at broker Responses base URL" "yes" \
   "$(grep -Fq -- '--env CODEX_BROKER_BASE_URL="${codex_broker_base_url:-}"' "$CONTAINER" && grep -Fq 'openai_base_url = \"%s/v1\"' "$CONTAINER" && echo yes || echo no)"
 t "Codex broker sends opaque capability through generic agent credential only" "yes" \
-  "$(grep -A4 -F 'openai-broker)' "$CONTAINER" | grep -Fq 'AGENT_CREDENTIAL_VALUE="$broker_capability"' && echo yes || echo no)"
+  "$(grep -A3 -F 'openai-broker|anthropic-broker)' "$CONTAINER" | grep -Fq 'AGENT_CREDENTIAL_VALUE="$broker_capability"' && echo yes || echo no)"
 t "brokered agent gets no provider-capable proxy env" "yes" \
   "$(grep -Fq 'if [ "$broker_profile" != true ]; then' "$CONTAINER" && echo yes || echo no)"
 t "broker proxy args remain nonempty on macOS Bash nounset" "yes" \

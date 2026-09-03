@@ -176,11 +176,18 @@ Optional Phase A controls can defer paid inference below a protected budget floo
 
 ## Phase B1: Provider broker (opt-in)
 
-Phase B1 adds an optional provider broker that keeps the actual OpenRouter API key outside the untrusted agent container. When `PROVIDER_BROKER_ENABLED=true`:
+The provider-broker phases add an optional trusted proxy that keeps provider
+credentials outside the untrusted agent container. When `PROVIDER_BROKER_ENABLED=true`:
 
-- A dedicated hardened broker container provisions a per-job temporary key via the OpenRouter Management API
-- The management key and temporary upstream key never reach the agent
+- A dedicated hardened broker container is selected for OpenRouter, OpenAI, or Anthropic
+- Provider/admin credentials held by the trusted broker never reach the agent
 - The agent receives only an opaque broker capability token
 - The broker validates every request against policy (model, path, concurrency, budget)
-- Cleanup deletes the temporary key; expiry fallback on failure
+- Providers with ephemeral credentials clean them up; Anthropic keeps its static key broker-only
 - See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for full details
+
+Anthropic production plumbing is intentionally inert: ordinary Claude Dispatch
+routes through the conservative spend guard, but the workflow pins
+`ANTHROPIC_BROKER_LIVE_ALLOWED=false`. Phase A also continues to return
+`PROVIDER_BUDGET_UNKNOWN` for paid Anthropic execution. Enabling real Anthropic
+forwarding requires a separate reviewed rollout.

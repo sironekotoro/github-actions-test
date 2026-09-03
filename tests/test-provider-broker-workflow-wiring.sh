@@ -7,12 +7,12 @@ source "$ROOT/tests/lib/helpers.sh"
 DISPATCH="$ROOT/.github/workflows/agent-dispatch.yml"
 REPAIR="$ROOT/.github/workflows/review-repair-executor.yml"
 
-# Ordinary Agent Dispatch: broker is opt-in for API-backed OpenCode and Codex.
+# Ordinary Agent Dispatch: broker is opt-in for API-backed agents.
 # Real provider inference keys are withheld whenever the selected agent is
 # brokered; only the corresponding trusted provisioning credential is exposed
 # to the outer executor.
-t "dispatch wires broker flag from repository variable for OpenCode or Codex" "yes" \
-  "$(grep -Fq "provider_broker_enabled: \${{ contains(fromJSON('[\"opencode\",\"codex\"]'), needs.route.outputs.agent) && vars.PROVIDER_BROKER_ENABLED == 'true' && 'true' || 'false' }}" "$DISPATCH" && echo yes || echo no)"
+t "dispatch wires broker flag from repository variable for all API-backed agents" "yes" \
+  "$(grep -Fq "provider_broker_enabled: \${{ contains(fromJSON('[\"opencode\",\"codex\",\"claude-code\"]'), needs.route.outputs.agent) && vars.PROVIDER_BROKER_ENABLED == 'true' && 'true' || 'false' }}" "$DISPATCH" && echo yes || echo no)"
 t "dispatch wires provider job cap" "yes" \
   "$(grep -Fq "provider_job_max_usd: \${{ vars.PROVIDER_JOB_MAX_USD || '0.25' }}" "$DISPATCH" && echo yes || echo no)"
 t "dispatch passes management key only for enabled OpenCode broker" "yes" \
@@ -23,8 +23,8 @@ t "dispatch withholds direct OpenRouter key in broker mode" "yes" \
   "$(grep -Fq "agent_credential: \${{ needs.route.outputs.agent == 'opencode' && vars.PROVIDER_BROKER_ENABLED != 'true' && secrets.OPENROUTER_API_KEY" "$DISPATCH" && echo yes || echo no)"
 t "dispatch withholds direct OpenAI key in broker mode" "yes" \
   "$(grep -Fq "needs.route.outputs.agent == 'codex' && vars.PROVIDER_BROKER_ENABLED != 'true' && secrets.OPENAI_API_KEY" "$DISPATCH" && echo yes || echo no)"
-t "dispatch preserves Claude direct credential path" "yes" \
-  "$(grep -Fq "needs.route.outputs.agent == 'claude-code' && secrets.ANTHROPIC_API_KEY" "$DISPATCH" && echo yes || echo no)"
+t "dispatch withholds direct Anthropic key in broker mode" "yes" \
+  "$(grep -Fq "needs.route.outputs.agent == 'claude-code' && vars.PROVIDER_BROKER_ENABLED != 'true' && secrets.ANTHROPIC_API_KEY" "$DISPATCH" && echo yes || echo no)"
 
 # Review Repair remains OpenCode/OpenRouter-only in B2c. Broker mode builds
 # the broker image and passes only the trusted OpenRouter management credential;
