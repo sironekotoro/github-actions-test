@@ -146,17 +146,15 @@ function normalizedAnthropicBeta(value) {
   return ANTHROPIC_BETA_FEATURES.filter((feature) => requested.has(feature)).join(',');
 }
 
-function hasSupportedBetaContract(value) {
+function hasRequiredBetaContract(value) {
   if (typeof value !== 'string') return false;
   const features = value.split(',').map((part) => part.trim());
   const unique = new Set(features);
-  return features.length === unique.size
-    && features.every((feature) => ANTHROPIC_BETA_FEATURES.includes(feature))
-    && REQUIRED_ANTHROPIC_BETA_FEATURES.every((feature) => unique.has(feature));
+  return REQUIRED_ANTHROPIC_BETA_FEATURES.every((feature) => unique.has(feature));
 }
 
 function validateAnthropicHeaders(req, res) {
-  if (req.headers['anthropic-version'] !== ANTHROPIC_VERSION || !hasSupportedBetaContract(req.headers['anthropic-beta'])) {
+  if (req.headers['anthropic-version'] !== ANTHROPIC_VERSION || !hasRequiredBetaContract(req.headers['anthropic-beta'])) {
     failJson(res, 400, 'BROKER_ANTHROPIC_HEADERS_DENIED', 'request headers are outside the pinned Anthropic contract');
     return false;
   }

@@ -178,7 +178,9 @@ try {
   mock = await startMock(BASE);
   broker = await startBroker(BASE, BASE + 1);
 
-  let response = await request(BASE + 1, validBody());
+  let response = await request(BASE + 1, validBody(), {
+    'anthropic-beta': 'future-priced-feature,effort-2025-11-24,claude-code-20250219,context-management-2025-06-27',
+  });
   t('guarded Messages request succeeds through local mock', 200, response.status);
   t('Count Tokens occurs before first Messages request', '/v1/messages/count_tokens', mock.state.events[0]?.path);
   t('first cost-bearing request follows Count Tokens', '/v1/messages', mock.state.events[1]?.path);
@@ -189,7 +191,7 @@ try {
   t('Messages max_tokens is rewritten to guarded ceiling', 4096, mock.state.messages[0]?.json?.max_tokens);
   t('Messages keeps exact supported model', MODEL, mock.state.messages[0]?.json?.model);
   t('Messages uses pinned Anthropic version', '2023-06-01', mock.state.messages[0]?.headers['anthropic-version']);
-  t('Messages uses pinned Anthropic beta contract', 'claude-code-20250219,context-management-2025-06-27,effort-2025-11-24', mock.state.messages[0]?.headers['anthropic-beta']);
+  t('Messages strips unknown beta and uses pinned Anthropic beta contract', 'claude-code-20250219,context-management-2025-06-27,effort-2025-11-24', mock.state.messages[0]?.headers['anthropic-beta']);
 
   response = await request(BASE + 1, validBody());
   t('second guarded request remains within cumulative allowance', 200, response.status);
@@ -211,8 +213,8 @@ try {
   t('unknown Anthropic version is denied before Count Tokens', 3, mock.state.counts.length);
 
   response = await request(BASE + 1, validBody(), { 'anthropic-beta': 'claude-code-20250219,new-priced-feature' });
-  t('unknown Anthropic beta fails closed', 400, response.status);
-  t('unknown Anthropic beta is denied before Count Tokens', 3, mock.state.counts.length);
+  t('missing required Anthropic beta fails closed', 400, response.status);
+  t('missing required Anthropic beta is denied before Count Tokens', 3, mock.state.counts.length);
 
   await stop(broker);
   const logs = broker.stderrText();
