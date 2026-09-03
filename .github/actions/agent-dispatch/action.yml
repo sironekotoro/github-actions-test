@@ -236,7 +236,7 @@ runs:
       shell: bash
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
-        AGENT_CREDENTIAL_VALUE: ${{ inputs.agent_credential || (steps.parse.outputs.agent == 'opencode' && inputs.openrouter_api_key || steps.parse.outputs.agent == 'codex' && inputs.openai_api_key || steps.parse.outputs.agent == 'claude-code' && inputs.anthropic_api_key || '') }}
+        AGENT_CREDENTIAL_VALUE: ${{ inputs.agent_credential || (inputs.provider_broker_enabled != 'true' && (steps.parse.outputs.agent == 'opencode' && inputs.openrouter_api_key || steps.parse.outputs.agent == 'codex' && inputs.openai_api_key || steps.parse.outputs.agent == 'claude-code' && inputs.anthropic_api_key) || '') }}
         OPENROUTER_MODEL: ${{ steps.parse.outputs.requested_model || inputs.openrouter_model }}
         AGENT_MAX_RUNTIME: ${{ steps.parse.outputs.max_runtime || '10' }}
         PROVIDER_BROKER_ENABLED: ${{ inputs.provider_broker_enabled }}
@@ -251,7 +251,7 @@ runs:
       shell: bash
       env:
         TASK_FILE: ${{ runner.temp }}/task.json
-        AGENT_CREDENTIAL_VALUE: ${{ inputs.agent_credential || (steps.parse.outputs.agent == 'opencode' && inputs.openrouter_api_key || steps.parse.outputs.agent == 'codex' && inputs.openai_api_key || steps.parse.outputs.agent == 'claude-code' && inputs.anthropic_api_key || '') }}
+        AGENT_CREDENTIAL_VALUE: ${{ inputs.agent_credential || (inputs.provider_broker_enabled != 'true' && (steps.parse.outputs.agent == 'opencode' && inputs.openrouter_api_key || steps.parse.outputs.agent == 'codex' && inputs.openai_api_key || steps.parse.outputs.agent == 'claude-code' && inputs.anthropic_api_key) || '') }}
         OPENROUTER_MODEL: ${{ steps.parse.outputs.requested_model || inputs.openrouter_model }}
         AGENT_MAX_RUNTIME: ${{ steps.parse.outputs.max_runtime || '10' }}
         PROVIDER_BROKER_ENABLED: ${{ inputs.provider_broker_enabled }}

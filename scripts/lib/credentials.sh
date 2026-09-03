@@ -14,13 +14,14 @@
 #   chatgpt-subscription - Host-local ChatGPT subscription (no credential to inject;
 #                          represented for future trusted-host provisioning only)
 #   anthropic-api       - Anthropic API key (repo secret ANTHROPIC_API_KEY)
+#   anthropic-broker    - Anthropic via broker (capability token replaces key)
 #   claude-subscription - Host-local Claude Code subscription (no credential to inject;
 #                          represented for future trusted-host provisioning only)
 #
 # Compatibility matrix (agent -> allowed profiles):
 #   opencode    -> openrouter, openrouter-broker
 #   codex       -> openai-api, openai-broker, chatgpt-subscription
-#   claude-code  -> anthropic-api, claude-subscription
+#   claude-code  -> anthropic-api, anthropic-broker, claude-subscription
 #
 # The credential profile is selected by the agent type. Only the matching
 # credential(s) are injected into the agent environment.
@@ -53,8 +54,8 @@ agent_allowed_profiles() {
 }
 
 # agent_default_profile <agent> -> prints the default profile key.
-# When PROVIDER_BROKER_ENABLED is true, API-backed OpenCode and Codex resolve
-# to their broker profiles. Claude remains direct until Phase B3 is wired.
+# When PROVIDER_BROKER_ENABLED is true, API-backed agents resolve to their
+# broker profiles. Broker profiles are trusted-routing-only.
 agent_default_profile() {
   local agent="$1"
   case "$agent" in
@@ -72,7 +73,13 @@ agent_default_profile() {
         echo "openai-api"
       fi
       ;;
-    claude-code) echo "anthropic-api" ;;
+    claude-code)
+      if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ]; then
+        echo "anthropic-broker"
+      else
+        echo "anthropic-api"
+      fi
+      ;;
     *)
       fail_with "$CAT_AGENT_AUTH" "unknown agent: $agent"
       ;;
@@ -89,6 +96,7 @@ profile_env_var() {
     openai-broker) echo "OPENAI_API_KEY" ;;
     chatgpt-subscription) echo "" ;;
     anthropic-api) echo "ANTHROPIC_API_KEY" ;;
+    anthropic-broker) echo "ANTHROPIC_API_KEY" ;;
     claude-subscription) echo "" ;;
     *)
       fail_with "$CAT_AGENT_AUTH" "unknown credential profile: $profile"
@@ -114,9 +122,12 @@ validate_credential_profile() {
   for p in $allowed; do
     [ "$p" = "$profile" ] && { found=true; break; }
   done
-  # B2c broker profile is trusted-routing-only for Codex. Accept it here while
-  # keeping the legacy user-selectable profile listing stable.
+  # Broker profiles added after the legacy profile selector are
+  # trusted-routing-only. Accept them here without widening that selector.
   if [ "$agent" = "codex" ] && [ "$profile" = "openai-broker" ]; then
+    found=true
+  fi
+  if [ "$agent" = "claude-code" ] && [ "$profile" = "anthropic-broker" ]; then
     found=true
   fi
   if [ "$found" != true ]; then
@@ -161,7 +172,7 @@ assert_execution_profile_supported() {
     fail_with "$CAT_AGENT_AUTH" "credential profile=$profile is unsupported in Agent Dispatch until trusted-host identity, per-job provisioning, and cleanup are implemented"
   fi
   case "$profile" in
-    openrouter-broker|openai-broker)
+    openrouter-broker|openai-broker|anthropic-broker)
       if [ "${PROVIDER_BROKER_ENABLED:-false}" != "true" ]; then
         fail_with "$CAT_AGENT_AUTH" "credential profile=$profile requires PROVIDER_BROKER_ENABLED=true"
       fi
@@ -179,6 +190,7 @@ credential_summary() {
     openai-broker) label="OpenAI via broker (per-job capability token; disposable project credential held by broker)" ;;
     chatgpt-subscription) label="host-local ChatGPT subscription (no credential injected)" ;;
     anthropic-api) label="Anthropic API key (repo secret)" ;;
+    anthropic-broker) label="Anthropic via broker (per-job capability token; provider key held by broker)" ;;
     claude-subscription) label="host-local Claude Code subscription (no credential injected)" ;;
     *) label="unknown" ;;
   esac

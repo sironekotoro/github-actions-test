@@ -36,7 +36,7 @@ agent_credential=""
 broker_capability=""
 broker_profile=false
 case "$profile" in
-  openrouter-broker|openai-broker) broker_profile=true ;;
+  openrouter-broker|openai-broker|anthropic-broker) broker_profile=true ;;
 esac
 
 if [ -n "$cred_var" ]; then
@@ -93,9 +93,12 @@ trap cleanup EXIT
 openrouter_model="${OPENROUTER_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
 codex_model="$(jq -r '.requested_model // empty' "$task_file")"
 [ -n "$codex_model" ] || codex_model="${CODEX_MODEL:-gpt-5.6-sol}"
+claude_model="$(jq -r '.requested_model // empty' "$task_file")"
+[ -n "$claude_model" ] || claude_model="${CLAUDE_MODEL:-claude-sonnet-5}"
 
 opencode_broker_base_url=""
 codex_broker_base_url=""
+anthropic_broker_base_url=""
 if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$broker_profile" = true ]; then
   broker_task_id="$(jq -r '.task_id // empty' "$task_file")"
   [ -n "$broker_task_id" ] || fail_with "$CAT_BROKER_UNAVAILABLE" "validated task id is missing for broker"
@@ -122,6 +125,12 @@ if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$broker_profile" = tru
       broker_allowed_model="$codex_model"
       broker_secret_args+=(--env "OPENAI_ADMIN_KEY")
       ;;
+    anthropic-broker)
+      [ -n "${ANTHROPIC_API_KEY:-}" ] || fail_with "$CAT_BROKER_UNAVAILABLE" "ANTHROPIC_API_KEY required for Anthropic broker"
+      broker_provider="anthropic"
+      broker_allowed_model="$claude_model"
+      broker_secret_args+=(--env "ANTHROPIC_API_KEY")
+      ;;
     *)
       fail_with "$CAT_BROKER_UNAVAILABLE" "unsupported broker profile=$profile"
       ;;
@@ -147,6 +156,8 @@ if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$broker_profile" = tru
     -e BROKER_TASK_ID="$broker_task_id" \
     -e BROKER_ALLOWED_MODEL="$broker_allowed_model" \
     -e BROKER_JOB_MAX_USD="${PROVIDER_JOB_MAX_USD:-0.25}" \
+    -e BROKER_ANTHROPIC_SPEND_GUARD_ENABLED="$([ "$profile" = "anthropic-broker" ] && printf true || printf false)" \
+    -e BROKER_ANTHROPIC_LIVE_ALLOWED="${ANTHROPIC_BROKER_LIVE_ALLOWED:-false}" \
     -e BROKER_MAX_REQUESTS="${BROKER_MAX_REQUESTS:-500}" \
     -e BROKER_CAPABILITY_EXPIRY_MS="$broker_capability_expiry_ms" \
     -e BROKER_PROXY_URL="http://${PROXY_BROKER_IP}:3128" \
@@ -179,6 +190,7 @@ if [ "${PROVIDER_BROKER_ENABLED:-false}" = "true" ] && [ "$broker_profile" = tru
   case "$profile" in
     openrouter-broker) opencode_broker_base_url="http://$broker_ip:3080" ;;
     openai-broker) codex_broker_base_url="http://$broker_ip:3080" ;;
+    anthropic-broker) anthropic_broker_base_url="http://$broker_ip:3080" ;;
   esac
 else
   setup_standard_proxy "$private_network" "$egress_network" "$proxy_name" "$egress_image"
@@ -219,7 +231,7 @@ if [ -n "$cred_var" ]; then
         export OPENROUTER_API_KEY="$broker_capability"
         credential_args+=(--env OPENROUTER_API_KEY)
         ;;
-      openai-broker)
+      openai-broker|anthropic-broker)
         export AGENT_CREDENTIAL_VALUE="$broker_capability"
         credential_args+=(--env AGENT_CREDENTIAL_VALUE)
         ;;
@@ -275,8 +287,10 @@ docker run --rm --init \
   --env AGENT_MAX_RUNTIME="${AGENT_MAX_RUNTIME:-30}" \
   --env OPENROUTER_MODEL="${OPENROUTER_MODEL:-}" \
   --env CODEX_MODEL="$codex_model" \
+  --env CLAUDE_MODEL="$claude_model" \
   --env OPENCODE_BROKER_BASE_URL="${opencode_broker_base_url:-}" \
   --env CODEX_BROKER_BASE_URL="${codex_broker_base_url:-}" \
+  --env ANTHROPIC_BROKER_BASE_URL="${anthropic_broker_base_url:-}" \
   --env OPENCODE_CONFIG_CONTENT="${OPENCODE_CONFIG_CONTENT:-}" \
   --env PROVIDER_BROKER_ENABLED="${PROVIDER_BROKER_ENABLED:-false}" \
   --env AGENT_AUTO_INSTALL=false \

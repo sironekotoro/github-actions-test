@@ -188,6 +188,12 @@ Repository secret source:
 - Codex: `OPENAI_API_KEY`（Codex processでは `CODEX_API_KEY` に変換）
 - Claude Code: `ANTHROPIC_API_KEY`
 
+`PROVIDER_BROKER_ENABLED=true` の通常 Claude Dispatch では、この secret は
+trusted broker container だけに渡り、agent には opaque capability だけが渡ります。
+ただし production workflow は `ANTHROPIC_BROKER_LIVE_ALLOWED=false` に固定され、
+Phase A も Anthropic を `PROVIDER_BUDGET_UNKNOWN` として待機させます。実 Anthropic
+forwarding は別途承認・review・明示的な live rollout が完了するまで有効化しないでください。
+
 subscription profileは安全なhandoffが実装されるまでfail-closedです。
 
 ## `AGENT_PATCH_INVALID`

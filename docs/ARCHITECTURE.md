@@ -199,6 +199,20 @@ When `true` for OpenCode, any provisioning/configuration failure fails closed wi
 Codex/OpenAI and Claude/Anthropic execution remain unchanged in Phase B1 core.
 Subscription profiles remain fail-closed. GitHub-hosted live coding remains disabled.
 
+### Phase B3c: Anthropic production plumbing (live disabled)
+
+Ordinary Claude Code Dispatch supports a trusted-only `anthropic-broker` profile.
+The common broker image selects `provider-broker-anthropic.mjs`, holds the real
+Anthropic key in the trusted broker container, and gives the agent only an opaque
+capability plus `ANTHROPIC_BROKER_BASE_URL`. The exact Claude model is shared by
+the broker allowlist and CLI invocation, and the conservative spend guard is on.
+
+This plumbing does not authorize paid inference. The production workflow fixes
+`ANTHROPIC_BROKER_LIVE_ALLOWED=false`, while the broker independently rejects a
+non-loopback Anthropic endpoint unless both live forwarding and spend enforcement
+are enabled. Phase A retains `PROVIDER_BUDGET_UNKNOWN -> wait` for Claude when
+the budget gate is enabled. There is no direct-key or hosted-runner fallback.
+
 ### OpenCode configuration
 
 Pinned opencode-ai@1.18.16 receives `OPENCODE_CONFIG_CONTENT` at runtime with a
