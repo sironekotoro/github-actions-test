@@ -1,0 +1,122 @@
+name: B3c Ordinary Claude Broker E2E
+
+on:
+  issues:
+    types: [opened]
+
+concurrency:
+  group: b3c-ordinary-claude-broker-e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  plan:
+    name: Validate B3c ordinary broker request
+    if: >-
+      github.actor == 'sironekotoro' &&
+      github.event.issue.user.login == 'sironekotoro' &&
+      github.event.issue.title == 'B3c Ordinary Claude Broker E2E'
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      trusted_sha: ${{ steps.resolve.outputs.trusted_sha }}
+      candidate_sha: ${{ steps.resolve.outputs.candidate_sha }}
+    steps:
+      - name: Resolve immutable trusted and candidate revisions
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE_BODY" =~ ^PR_NUMBER=([0-9]+)$ ]] || {
+            echo 'B3C_ORDINARY_E2E_INVALID_REQUEST: body must be exactly PR_NUMBER=<number>' >&2
+            exit 1
+          }
+          pr_number="${BASH_REMATCH[1]}"
+          pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
+          [ "$(jq -r '.state' <<<"$pr_json")" = open ] || { echo 'B3C_ORDINARY_E2E_INVALID_PR: PR must be open' >&2; exit 1; }
+          [ "$(jq -r '.draft // false' <<<"$pr_json")" = false ] || { echo 'B3C_ORDINARY_E2E_INVALID_PR: PR must not be draft' >&2; exit 1; }
+          [ "$(jq -r '.base.ref' <<<"$pr_json")" = master ] || { echo 'B3C_ORDINARY_E2E_INVALID_PR: base must be master' >&2; exit 1; }
+          [ "$(jq -r '.head.repo.full_name' <<<"$pr_json")" = "$GITHUB_REPOSITORY" ] || { echo 'B3C_ORDINARY_E2E_INVALID_PR: candidate must be same repository' >&2; exit 1; }
+          candidate_sha="$(jq -r '.head.sha' <<<"$pr_json")"
+          [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'B3C_ORDINARY_E2E_INVALID_PR: invalid candidate SHA' >&2; exit 1; }
+
+          allowed=$'.github/actions/agent-dispatch/action.yml\n.github/workflows/agent-dispatch.yml\nREADME.md\ndocker/provider-broker.Dockerfile\ndocs/ARCHITECTURE.md\ndocs/RUNBOOK.md\nscripts/lib/credentials.sh\nscripts/provider-broker-entrypoint.sh\nscripts/run-agent-dispatch-container.sh\ntests/test-b2c-codex-broker-wiring.sh\ntests/test-b3c-anthropic-broker-wiring.sh\ntests/test-provider-broker-workflow-wiring.sh'
+          mapfile -t changed < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100" --jq '.[].filename')
+          [ "${#changed[@]}" -gt 0 ] || { echo 'B3C_ORDINARY_E2E_INVALID_PR: no candidate files' >&2; exit 1; }
+          for file in "${changed[@]}"; do
+            grep -Fxq "$file" <<<"$allowed" || { echo "B3C_ORDINARY_E2E_UNEXPECTED_CANDIDATE_FILE: $file" >&2; exit 1; }
+          done
+
+          trusted_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" --jq '.object.sha')"
+          [[ "$trusted_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'B3C_ORDINARY_E2E_INVALID_TRUSTED_SHA' >&2; exit 1; }
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "trusted_sha=$trusted_sha" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
+
+  accept:
+    name: Ordinary Agent Dispatch Claude broker acceptance
+    needs: plan
+    runs-on: [self-hosted, review-repair, macOS, ARM64]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable trusted harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.plan.outputs.trusted_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Checkout immutable candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.plan.outputs.candidate_sha }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Verify immutable revisions and trusted harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(git -C trusted rev-parse HEAD)" = "${{ needs.plan.outputs.trusted_sha }}" ]
+          [ "$(git -C candidate rev-parse HEAD)" = "${{ needs.plan.outputs.candidate_sha }}" ]
+          bash -n trusted/scripts/b3c-ordinary-claude-broker-e2e.sh
+
+      - name: Run zero-paid ordinary Claude broker acceptance
+        shell: bash
+        env:
+          CANDIDATE_PR: ${{ needs.plan.outputs.pr_number }}
+          CANDIDATE_SHA: ${{ needs.plan.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          echo "Testing PR #${CANDIDATE_PR} at ${CANDIDATE_SHA}"
+          bash trusted/scripts/b3c-ordinary-claude-broker-e2e.sh "$GITHUB_WORKSPACE/trusted" "$GITHUB_WORKSPACE/candidate"
+
+      - name: Acceptance summary
+        if: always()
+        shell: bash
+        env:
+          CANDIDATE_PR: ${{ needs.plan.outputs.pr_number }}
+          TRUSTED_SHA: ${{ needs.plan.outputs.trusted_sha }}
+          CANDIDATE_SHA: ${{ needs.plan.outputs.candidate_sha }}
+        run: |
+          {
+            echo '## B3c Ordinary Claude Broker E2E'
+            echo
+            echo "- PR: #${CANDIDATE_PR}"
+            echo "- Trusted harness: \`${TRUSTED_SHA}\`"
+            echo "- Candidate: \`${CANDIDATE_SHA}\`"
+            echo '- CLI: **pinned Claude Code 2.1.165**'
+            echo '- Path: **production ordinary wrapper → production broker image/entrypoint → local Count Tokens → spend guard → local Messages mock**'
+            echo '- Agent credential: **opaque capability only**'
+            echo '- Provider/model inference: **0**'
+            echo '- Real Anthropic credentials: **not provided**'
+            echo '- Provider egress: **disabled in trusted test layer**'
+          } >> "$GITHUB_STEP_SUMMARY"
