@@ -28,7 +28,7 @@ async function readJson(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-function startMock(port, { inputTokens = 12000, countStatus = 200 } = {}) {
+function startMock(port, { inputTokens = 12000, countStatus = 200, countDelayMs = 0, abortMessages = false } = {}) {
   const state = { events: [], counts: [], messages: [] };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', 'http://mock');
@@ -41,12 +41,19 @@ function startMock(port, { inputTokens = 12000, countStatus = 200 } = {}) {
       state.counts.push(entry);
       if (req.headers['x-api-key'] !== PROVIDER_KEY) return sendJson(res, 401, { error: { message: 'bad provider key' } });
       if (countStatus !== 200) return sendJson(res, countStatus, { error: { message: 'count failure' } });
+      if (countDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, countDelayMs));
       return sendJson(res, 200, { input_tokens: inputTokens });
     }
 
     if (req.method === 'POST' && url.pathname === '/v1/messages' && url.search === '?beta=true') {
       state.messages.push(entry);
       if (req.headers['x-api-key'] !== PROVIDER_KEY) return sendJson(res, 401, { error: { message: 'bad provider key' } });
+      if (abortMessages) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('event: message_start\ndata: {}\n\n');
+        res.destroy();
+        return;
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end('event: message_stop\ndata: {"type":"message_stop"}\n\n');
       return;
@@ -92,7 +99,30 @@ async function startBroker(mockPort, brokerPort, extraEnv = {}) {
   return child;
 }
 
-function request(port, body) {
+function request(port, body, headerOverrides = {}) {
+  return new Promise((resolve, reject) => {
+    const raw = Buffer.from(JSON.stringify(body));
+    const req = http.request({
+      hostname: '127.0.0.1', port, path: '/v1/messages?beta=true', method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-length': String(raw.length),
+        'x-api-key': CAPABILITY,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'claude-code-20250219,context-management-2025-06-27,effort-2025-11-24',
+        ...headerOverrides,
+      },
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('error', reject);
+    req.end(raw);
+  });
+}
+
+function slowRequest(port, body, pauseMs = 150) {
   return new Promise((resolve, reject) => {
     const raw = Buffer.from(JSON.stringify(body));
     const req = http.request({
@@ -110,7 +140,9 @@ function request(port, body) {
       res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
     });
     req.on('error', reject);
-    req.end(raw);
+    const split = Math.max(1, Math.floor(raw.length / 2));
+    req.write(raw.subarray(0, split));
+    setTimeout(() => req.end(raw.subarray(split)), pauseMs);
   });
 }
 
@@ -156,6 +188,8 @@ try {
   t('Count Tokens preserves tool definitions', 1, mock.state.counts[0]?.json?.tools?.length);
   t('Messages max_tokens is rewritten to guarded ceiling', 4096, mock.state.messages[0]?.json?.max_tokens);
   t('Messages keeps exact supported model', MODEL, mock.state.messages[0]?.json?.model);
+  t('Messages uses pinned Anthropic version', '2023-06-01', mock.state.messages[0]?.headers['anthropic-version']);
+  t('Messages uses pinned Anthropic beta contract', 'claude-code-20250219,context-management-2025-06-27,effort-2025-11-24', mock.state.messages[0]?.headers['anthropic-beta']);
 
   response = await request(BASE + 1, validBody());
   t('second guarded request remains within cumulative allowance', 200, response.status);
@@ -172,6 +206,14 @@ try {
   t('unpriced shape does not call Count Tokens', 3, mock.state.counts.length);
   t('unpriced shape does not call Messages', 2, mock.state.messages.length);
 
+  response = await request(BASE + 1, validBody(), { 'anthropic-version': '2099-01-01' });
+  t('unknown Anthropic version fails closed', 400, response.status);
+  t('unknown Anthropic version is denied before Count Tokens', 3, mock.state.counts.length);
+
+  response = await request(BASE + 1, validBody(), { 'anthropic-beta': 'claude-code-20250219,new-priced-feature' });
+  t('unknown Anthropic beta fails closed', 400, response.status);
+  t('unknown Anthropic beta is denied before Count Tokens', 3, mock.state.counts.length);
+
   await stop(broker);
   const logs = broker.stderrText();
   t('broker logs contain only safe reservation metadata', true, logs.includes('reserved_micro_usd='));
@@ -184,6 +226,36 @@ try {
   response = await request(BASE + 11, validBody());
   t('Count Tokens failure fails closed', 502, response.status);
   t('Count Tokens failure emits no Messages call', 0, mock.state.messages.length);
+  await stop(broker);
+  await close(mock.server);
+
+  mock = await startMock(BASE + 30);
+  broker = await startBroker(BASE + 30, BASE + 31);
+  const firstSlow = slowRequest(BASE + 31, validBody());
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  response = await request(BASE + 31, validBody());
+  t('second request is denied while first request body is incomplete', 429, response.status);
+  t('slow-body concurrency denial emits no competing Count Tokens call', 0, mock.state.counts.length);
+  response = await firstSlow;
+  t('first slow-body request completes normally', 200, response.status);
+  t('only the admitted slow-body request reaches Messages', 1, mock.state.messages.length);
+  await stop(broker);
+  await close(mock.server);
+
+  mock = await startMock(BASE + 40, { countDelayMs: 100 });
+  broker = await startBroker(BASE + 40, BASE + 41, { BROKER_CAPABILITY_EXPIRY_MS: '50' });
+  response = await request(BASE + 41, validBody());
+  t('capability expiry after Count Tokens denies Messages', 401, response.status);
+  t('expired-after-count request emits no Messages call', 0, mock.state.messages.length);
+  await stop(broker);
+  await close(mock.server);
+
+  mock = await startMock(BASE + 50, { abortMessages: true });
+  broker = await startBroker(BASE + 50, BASE + 51);
+  try { await request(BASE + 51, validBody()); } catch {}
+  await waitForHealth(BASE + 51);
+  t('partial upstream stream failure leaves broker alive', true, broker.exitCode === null);
+  t('partial upstream stream made exactly one reserved Messages call', 1, mock.state.messages.length);
   await stop(broker);
   await close(mock.server);
 

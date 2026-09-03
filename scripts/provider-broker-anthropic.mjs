@@ -26,6 +26,16 @@ const JOB_MAX_USD_RAW = String(process.env.BROKER_JOB_MAX_USD || '0.25').trim();
 const MAX_OUTPUT_RAW = String(process.env.BROKER_ANTHROPIC_MAX_OUTPUT_TOKENS_PER_REQUEST || '').trim();
 const BODY_LIMIT_RAW = String(process.env.BROKER_MAX_BODY_BYTES || '').trim();
 const PROXY_URL = process.env.BROKER_PROXY_URL || '';
+const ANTHROPIC_VERSION = '2023-06-01';
+const ANTHROPIC_BETA_FEATURES = Object.freeze([
+  'claude-code-20250219',
+  'context-management-2025-06-27',
+  'effort-2025-11-24',
+]);
+const REQUIRED_ANTHROPIC_BETA_FEATURES = Object.freeze([
+  'claude-code-20250219',
+  'effort-2025-11-24',
+]);
 
 let ProxyAgent = null;
 if (PROXY_URL) {
@@ -106,7 +116,7 @@ function requestUrl(req) {
 }
 
 function buildUpstreamHeaders(reqHeaders) {
-  const allowed = new Set(['content-type', 'accept', 'accept-encoding', 'user-agent', 'anthropic-version', 'anthropic-beta']);
+  const allowed = new Set(['accept', 'accept-encoding', 'user-agent']);
   const blocked = new Set([
     'authorization', 'x-api-key', 'api-key', 'proxy-authorization', 'proxy-authenticate',
     'www-authenticate', 'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host',
@@ -124,9 +134,33 @@ function buildUpstreamHeaders(reqHeaders) {
 function trustedAnthropicHeaders(reqHeaders) {
   const headers = buildUpstreamHeaders(reqHeaders);
   headers['x-api-key'] = ANTHROPIC_API_KEY;
-  if (!headers['anthropic-version'] && !headers['Anthropic-Version']) headers['anthropic-version'] = '2023-06-01';
-  if (!headers['Content-Type'] && !headers['content-type']) headers['Content-Type'] = 'application/json';
+  headers['anthropic-version'] = ANTHROPIC_VERSION;
+  headers['anthropic-beta'] = normalizedAnthropicBeta(reqHeaders['anthropic-beta']);
+  headers['content-type'] = 'application/json';
   return headers;
+}
+
+function normalizedAnthropicBeta(value) {
+  if (typeof value !== 'string') return '';
+  const requested = new Set(value.split(',').map((part) => part.trim()));
+  return ANTHROPIC_BETA_FEATURES.filter((feature) => requested.has(feature)).join(',');
+}
+
+function hasSupportedBetaContract(value) {
+  if (typeof value !== 'string') return false;
+  const features = value.split(',').map((part) => part.trim());
+  const unique = new Set(features);
+  return features.length === unique.size
+    && features.every((feature) => ANTHROPIC_BETA_FEATURES.includes(feature))
+    && REQUIRED_ANTHROPIC_BETA_FEATURES.every((feature) => unique.has(feature));
+}
+
+function validateAnthropicHeaders(req, res) {
+  if (req.headers['anthropic-version'] !== ANTHROPIC_VERSION || !hasSupportedBetaContract(req.headers['anthropic-beta'])) {
+    failJson(res, 400, 'BROKER_ANTHROPIC_HEADERS_DENIED', 'request headers are outside the pinned Anthropic contract');
+    return false;
+  }
+  return true;
 }
 
 async function providerFetch(path, headers, body) {
@@ -194,21 +228,24 @@ async function handleMessages(req, res, url) {
   if (req.method !== 'POST' || url.pathname !== '/v1/messages' || url.search !== '?beta=true') {
     return failJson(res, 403, 'BROKER_PATH_DENIED', `unsupported ${req.method} ${url.pathname}${url.search}`);
   }
-
-  const body = await readBody(req, res);
-  if (body === null) return;
-  let parsed;
-  try { parsed = JSON.parse(body); }
-  catch { return failJson(res, 400, 'BROKER_MALFORMED_PAYLOAD', 'invalid JSON'); }
-  if (!validateRequestShape(parsed, res)) return;
-  if (SPEND_GUARD_ENABLED) {
-    try { assertSupportedAnthropicShape(parsed); }
-    catch { return failJson(res, 400, 'BROKER_SPEND_SHAPE_DENIED', 'request shape is not covered by Anthropic spend policy'); }
-  }
-
-  requestCount++;
+  // Acquire the single request slot before the first await. Otherwise two
+  // slow request bodies can both pass the concurrency check and race the
+  // in-memory spend reservation.
   concurrentCount++;
   try {
+    const body = await readBody(req, res);
+    if (body === null) return;
+    let parsed;
+    try { parsed = JSON.parse(body); }
+    catch { return failJson(res, 400, 'BROKER_MALFORMED_PAYLOAD', 'invalid JSON'); }
+    if (!validateRequestShape(parsed, res)) return;
+    if (SPEND_GUARD_ENABLED) {
+      try { assertSupportedAnthropicShape(parsed); }
+      catch { return failJson(res, 400, 'BROKER_SPEND_SHAPE_DENIED', 'request shape is not covered by Anthropic spend policy'); }
+    }
+    if (!validateAnthropicHeaders(req, res)) return;
+
+    requestCount++;
     let forwardedBody = parsed;
     if (SPEND_GUARD_ENABLED) {
       let estimatedInputTokens;
@@ -216,6 +253,9 @@ async function handleMessages(req, res, url) {
         estimatedInputTokens = await countInputTokens(parsed, req.headers);
       } catch {
         return failJson(res, 502, 'BROKER_TOKEN_COUNT_FAILED', 'Anthropic token count failed closed');
+      }
+      if (Date.now() > capabilityExpiresAt) {
+        return failJson(res, 401, 'BROKER_CAPABILITY_EXPIRED', 'capability expired before cost-bearing request');
       }
 
       const reservation = reserveAnthropicRequest({
@@ -240,8 +280,12 @@ async function handleMessages(req, res, url) {
     res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') || 'application/json' });
     if (upstream.body) for await (const chunk of upstream.body) res.write(chunk);
     res.end();
-  } catch (error) {
-    failJson(res, 502, 'BROKER_UPSTREAM_FAILED', `upstream error: ${error.message}`);
+  } catch {
+    // A streaming failure can happen after response headers were sent. Retain
+    // the full reservation and terminate that response without attempting a
+    // second writeHead; the broker stays alive for controlled cleanup.
+    if (res.headersSent) res.destroy();
+    else failJson(res, 502, 'BROKER_UPSTREAM_FAILED', 'Anthropic upstream request failed');
   } finally {
     concurrentCount--;
   }
