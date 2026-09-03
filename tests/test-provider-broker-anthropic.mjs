@@ -85,7 +85,11 @@ async function startBroker(mockPort, brokerPort, extraEnv = {}) {
 
 function request(port, { method = 'POST', path = '/v1/messages?beta=true', capability = CAPABILITY, body, rawBody, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const h = { ...headers };
+    const h = {
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'claude-code-20250219,effort-2025-11-24',
+      ...headers,
+    };
     if (capability !== null) h['x-api-key'] = capability;
     let payload = null;
     if (rawBody !== undefined) payload = Buffer.from(rawBody);
