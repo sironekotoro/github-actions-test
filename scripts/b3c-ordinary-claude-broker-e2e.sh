@@ -48,6 +48,7 @@ broker_image="provider-broker:$run_key"
 private_network="agent-dispatch-private-$run_key"
 egress_network="agent-dispatch-egress-$run_key"
 broker_egress_network="agent-dispatch-broker-egress-$run_key"
+mock_network="b3c-ordinary-mock-net-$run_key"
 mock_name="b3c-ordinary-mock-$run_key"
 tmpdir="$(mktemp -d)"
 runtime_root="$tmpdir/runtime"
@@ -71,7 +72,7 @@ cleanup() {
   remove_by_ancestor "$broker_image"
   remove_by_ancestor "$production_broker_image"
   remove_by_ancestor "$egress_image"
-  docker network rm "$private_network" "$broker_egress_network" "$egress_network" >/dev/null 2>&1 || true
+  docker network rm "$mock_network" "$private_network" "$broker_egress_network" "$egress_network" >/dev/null 2>&1 || true
   docker image rm -f "$agent_image" "$egress_image" "$broker_image" "$production_broker_image" >/dev/null 2>&1 || true
   rm -rf "$tmpdir"
 }
@@ -186,7 +187,8 @@ case "$claude_version" in
   *) echo "B3C_ORDINARY_E2E_CLAUDE_VERSION_MISMATCH: $claude_version" >&2; exit 1 ;;
 esac
 
-docker run -d --name "$mock_name" --network none \
+docker network create --internal "$mock_network" >/dev/null
+docker run -d --name "$mock_name" --network "$mock_network" --network-alias mock \
   --read-only --cap-drop=ALL --security-opt=no-new-privileges \
   --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m \
   --mount "type=bind,src=$mock_script,dst=/runtime/mock.mjs,readonly" \
@@ -214,17 +216,17 @@ bash "$CANDIDATE/scripts/run-agent-dispatch-container.sh" >"$wrapper_stdout" 2>"
 wrapper_pid=$!
 set -e
 
-mock_connected=false
-for _ in $(seq 1 200); do
-  if docker network inspect "$private_network" >/dev/null 2>&1; then
-    if docker network connect --alias mock "$private_network" "$mock_name" >/dev/null 2>&1; then
-      mock_connected=true
+broker_connected=false
+for _ in $(seq 1 500); do
+  if docker inspect "agent-dispatch-broker-$run_key" >/dev/null 2>&1; then
+    if docker network connect "$mock_network" "agent-dispatch-broker-$run_key" >/dev/null 2>&1; then
+      broker_connected=true
       break
     fi
   fi
   sleep 0.02
 done
-[ "$mock_connected" = true ] || { wait "$wrapper_pid" || true; echo 'B3C_ORDINARY_E2E_MOCK_NETWORK_FAILED' >&2; cat "$wrapper_stderr" >&2 || true; exit 1; }
+[ "$broker_connected" = true ] || { wait "$wrapper_pid" || true; echo 'B3C_ORDINARY_E2E_BROKER_MOCK_NETWORK_FAILED' >&2; cat "$wrapper_stderr" >&2 || true; exit 1; }
 
 agent_container=''
 for _ in $(seq 1 200); do
@@ -278,7 +280,9 @@ wrapper_pid=''
 [ "$(cat "$runtime_root/failure_reason" 2>/dev/null || true)" = 'NO_CHANGES' ] || { echo 'B3C_ORDINARY_E2E_UNEXPECTED_FAILURE_REASON' >&2; exit 1; }
 
 docker rm -f "$mock_name" >/dev/null
-docker network rm "$private_network" >/dev/null
+docker network disconnect "$mock_network" "agent-dispatch-broker-$run_key" >/dev/null 2>&1 || true
+docker network rm "$mock_network" >/dev/null
+docker network rm "$private_network" >/dev/null 2>&1 || true
 
 for secret in 'b3c-local-provider-marker'; do
   if grep -Fq "$secret" "$wrapper_stdout" "$wrapper_stderr" || printf '%s\n' "$broker_logs" | grep -Fq "$secret"; then
@@ -287,6 +291,7 @@ for secret in 'b3c-local-provider-marker'; do
   fi
 done
 docker ps -aq --filter "name=agent-dispatch-broker-$run_key" | grep -q . && { echo 'B3C_ORDINARY_E2E_BROKER_CLEANUP_FAILED' >&2; exit 1; }
+docker network inspect "$mock_network" >/dev/null 2>&1 && { echo 'B3C_ORDINARY_E2E_MOCK_NETWORK_CLEANUP_FAILED' >&2; exit 1; }
 docker network inspect "$private_network" >/dev/null 2>&1 && { echo 'B3C_ORDINARY_E2E_PRIVATE_NETWORK_CLEANUP_FAILED' >&2; exit 1; }
 
 echo 'PASS: ordinary Claude container received capability-only broker environment'
