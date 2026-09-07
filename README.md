@@ -2,6 +2,16 @@
 
 ChatGPT / Issue から投入したタスクを、GitHub Actions と self-hosted runner 上の隔離 container 経由で coding agent に処理させる **中央 dispatch 基盤** の動作確認リポジトリ。
 
+## Project Freeze
+
+**このプロジェクトは 2026-09-08 時点で無期限フリーズ中です。**
+
+AIエージェント基盤そのものの複雑性・保守コストが高い一方、ChatGPT Work / Codex 等のプラットフォーム側の進化が非常に速いため、現時点では完成を目指した追加開発を続けません。将来、自前基盤でしか実現できない明確な要件が生じた場合のみ再開を検討します。
+
+このフリーズは失敗や破棄ではなく、現在までの投資と安全設計を保全し、必要になったときに再開できる状態へ固定するための判断です。未完成項目は active TODO ではなく **再開候補** として扱います。
+
+フリーズ時点の完成状況、動作確認済み範囲、再利用可能な部品、既知の制約、再開候補、検証記録は [docs/PROJECT_FREEZE.md](docs/PROJECT_FREEZE.md) を参照してください。
+
 ## 目的
 
 - **どの repository に対するタスクなのかを機械的に保証**し、wrong-repository execution を構造的に防ぐ。
